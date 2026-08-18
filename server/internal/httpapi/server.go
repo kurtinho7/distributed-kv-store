@@ -80,7 +80,11 @@ func (s *Server) put(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	entry := s.log.Append(oplog.OperationPut, key, req.Value)
+	entry, err := s.log.Append(oplog.OperationPut, key, req.Value)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to append log entry")
+		return
+	}
 	if err := s.store.Apply(entry); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to apply log entry")
 		return
@@ -95,7 +99,11 @@ func (s *Server) delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	entry := s.log.Append(oplog.OperationDelete, key, "")
+	entry, err := s.log.Append(oplog.OperationDelete, key, "")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to append log entry")
+		return
+	}
 	if err := s.store.Apply(entry); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to apply log entry")
 		return

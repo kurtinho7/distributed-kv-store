@@ -1,6 +1,11 @@
 package oplog
 
 import (
+	"bufio"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 )
@@ -24,6 +29,7 @@ type Log struct {
 	mu        sync.RWMutex
 	entries   []Entry
 	nextIndex uint64
+	file      *os.File
 }
 
 func New() *Log {
@@ -33,7 +39,28 @@ func New() *Log {
 	}
 }
 
-func (l *Log) Append(operation Operation, key, value string) Entry {
+func Open(path string) (*Log, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, err
+	}
+
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o644)
+	if err != nil {
+		return nil, err
+	}
+
+	log := New()
+	log.file = file
+
+	if err := log.load(path); err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+
+	return log, nil
+}
+
+func (l *Log) Append(operation Operation, key, value string) (Entry, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -45,10 +72,14 @@ func (l *Log) Append(operation Operation, key, value string) Entry {
 		CreatedAt: time.Now().UTC(),
 	}
 
+	if err := l.write(entry); err != nil {
+		return Entry{}, err
+	}
+
 	l.entries = append(l.entries, entry)
 	l.nextIndex++
 
-	return entry
+	return entry, nil
 }
 
 func (l *Log) Entries() []Entry {
@@ -68,4 +99,47 @@ func (l *Log) LastIndex() uint64 {
 		return 0
 	}
 	return l.entries[len(l.entries)-1].Index
+}
+
+func (l *Log) Close() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if l.file == nil {
+		return nil
+	}
+	return l.file.Close()
+}
+
+func (l *Log) load(path string) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		var entry Entry
+		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
+			return fmt.Errorf("decode log entry: %w", err)
+		}
+		l.entries = append(l.entries, entry)
+		if entry.Index >= l.nextIndex {
+			l.nextIndex = entry.Index + 1
+		}
+	}
+
+	return scanner.Err()
+}
+
+func (l *Log) write(entry Entry) error {
+	if l.file == nil {
+		return nil
+	}
+
+	if err := json.NewEncoder(l.file).Encode(entry); err != nil {
+		return err
+	}
+	return l.file.Sync()
 }

@@ -5,8 +5,11 @@ services:
     environment:
       KV_NODE_ID: node-1
       KV_ADDR: :8080
+      KV_LOG_PATH: /data/kv.log
     ports:
       - "8080:8080"
+    volumes:
+      - kvstore-data:/data
 
   web:
     build:
@@ -17,3 +20,6 @@ services:
       - "5173:5173"
     depends_on:
       - kvstore
+
+volumes:
+  kvstore-data:

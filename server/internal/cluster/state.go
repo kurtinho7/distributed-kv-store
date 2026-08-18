@@ -19,11 +19,26 @@ type Member struct {
 }
 
 type State struct {
-	nodeID string
+	nodeID   string
+	leaderID string
+	members  []Member
 }
 
-func NewState(nodeID string) *State {
-	return &State{nodeID: nodeID}
+func NewState(nodeID string, leaderID string, members []Member) *State {
+	if leaderID == "" {
+		leaderID = nodeID
+	}
+
+	if len(members) == 0 {
+		members = []Member{
+			{ID: nodeID, Address: "localhost:8080"},
+		}
+	}
+	return &State{
+		nodeID:   nodeID,
+		leaderID: leaderID,
+		members:  members,
+	}
 }
 
 func (s *State) Snapshot(logIndex uint64) []Member {
