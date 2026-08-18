@@ -82,12 +82,43 @@ func (l *Log) Append(operation Operation, key, value string) (Entry, error) {
 	return entry, nil
 }
 
+func (l *Log) AppendEntry(entry Entry) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if entry.Index != l.nextIndex {
+		return fmt.Errorf("invalid entry index: expected %d, got %d", l.nextIndex, entry.Index)
+	}
+
+	if err := l.write(entry); err != nil {
+		return err
+	}
+
+	l.entries = append(l.entries, entry)
+	l.nextIndex++
+
+	return nil
+}
+
 func (l *Log) Entries() []Entry {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 
 	entries := make([]Entry, len(l.entries))
 	copy(entries, l.entries)
+	return entries
+}
+
+func (l *Log) EntriesAfter(index uint64) []Entry {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+
+	entries := make([]Entry, 0)
+	for _, entry := range l.entries {
+		if entry.Index > index {
+			entries = append(entries, entry)
+		}
+	}
 	return entries
 }
 

@@ -110,3 +110,112 @@ func newTestServer() http.Handler {
 	log := oplog.New()
 	return NewServer(kv, state, log).Routes()
 }
+
+func newFollowerTestServer() http.Handler {
+	kv := store.NewMemory()
+	members := []cluster.Member{
+		{ID: "node-1", Address: "http://localhost:8080"},
+		{ID: "node-2", Address: "http://localhost:8081"},
+	}
+	state := cluster.NewState("node-2", "node-1", members)
+	log := oplog.New()
+	return NewServer(kv, state, log).Routes()
+}
+
+func TestReplicateAppliesEntryOnFollower(t *testing.T) {
+	handler := newFollowerTestServer()
+
+	body := bytes.NewBufferString(`{
+		"index": 1,
+		"operation": "put",
+		"key": "language",
+		"value": "go",
+		"createdAt": "2026-08-18T00:00:00Z"
+	}`)
+
+	request := httptest.NewRequest(http.MethodPost, "/internal/replicate", body)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected replication status 200, got %d: %s", response.Code, response.Body.String())
+	}
+
+	get := httptest.NewRequest(http.MethodGet, "/kv/language", nil)
+	getResponse := httptest.NewRecorder()
+	handler.ServeHTTP(getResponse, get)
+
+	if getResponse.Code != http.StatusOK {
+		t.Fatalf("expected replicated key to be readable, got %d", getResponse.Code)
+	}
+}
+
+func TestLeaderRejectsReplicatedEntry(t *testing.T) {
+	handler := newTestServer()
+
+	body := bytes.NewBufferString(`{
+		"index": 1,
+		"operation": "put",
+		"key": "language",
+		"value": "go",
+		"createdAt": "2026-08-18T00:00:00Z"
+	}`)
+
+	request := httptest.NewRequest(http.MethodPost, "/internal/replicate", body)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("expected leader replication status 400, got %d", response.Code)
+	}
+}
+
+func TestInternalLogEntriesReturnsEntriesAfterIndex(t *testing.T) {
+	handler := newTestServer()
+
+	putA := httptest.NewRequest(http.MethodPut, "/kv/a", bytes.NewBufferString(`{"value":"1"}`))
+	putB := httptest.NewRequest(http.MethodPut, "/kv/b", bytes.NewBufferString(`{"value":"2"}`))
+
+	for _, request := range []*http.Request{putA, putB} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("expected PUT status 200, got %d", response.Code)
+		}
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/internal/log?after=1", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected internal log status 200, got %d", response.Code)
+	}
+
+	var body struct {
+		Entries []oplog.Entry `json:"entries"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	if len(body.Entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(body.Entries))
+	}
+
+	if body.Entries[0].Index != 2 || body.Entries[0].Key != "b" {
+		t.Fatalf("unexpected entry: %#v", body.Entries[0])
+	}
+}
+
+func TestFollowerRejectsInternalLogRequest(t *testing.T) {
+	handler := newFollowerTestServer()
+
+	request := httptest.NewRequest(http.MethodGet, "/internal/log?after=0", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("expected follower internal log status 403, got %d", response.Code)
+	}
+}

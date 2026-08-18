@@ -102,3 +102,26 @@ curl http://localhost:8080/healthz
 ## Persistence
 
 Set `KV_LOG_PATH` to enable durable append-only logging. On startup, the server replays the log file into memory before accepting requests.
+
+## Replication Model
+
+The cluster uses leader-based replication with a static leader configured by `KV_LEADER_ID`.
+
+Write flow:
+
+1. Clients may send writes to any node.
+2. Followers forward writes to the configured leader.
+3. The leader appends the operation to its local log.
+4. The leader sends the log entry to peer nodes through `POST /internal/replicate`.
+5. The leader returns success after receiving a majority of acknowledgements.
+6. Followers apply replicated log entries in index order.
+
+Followers catch up on startup by requesting missing entries from the leader with `GET /internal/log?after=<index>`.
+
+Current limitations:
+
+- leader is static, not elected
+- follower catch-up runs once at startup
+- stopped followers miss writes until restart
+- no network partition simulation yet
+- no Raft terms or commit indexes yet

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"os"
@@ -8,6 +9,7 @@ import (
 	"kvstore/internal/cluster"
 	"kvstore/internal/httpapi"
 	"kvstore/internal/oplog"
+	"kvstore/internal/replication"
 	"kvstore/internal/store"
 )
 
@@ -16,6 +18,7 @@ func main() {
 	nodeID := env("KV_NODE_ID", "node-1")
 	leaderID := env("KV_LEADER_ID", nodeID)
 	logPath := os.Getenv("KV_LOG_PATH")
+	clusterConfig := os.Getenv("KV_CLUSTER")
 
 	kv := store.NewMemory()
 	operationLog := oplog.New()
@@ -33,10 +36,24 @@ func main() {
 		}
 		log.Printf("replayed %d operation(s) from %s", len(operationLog.Entries()), logPath)
 	}
-	members := []cluster.Member{
-		{ID: nodeID, Address: addr},
+	members, err := cluster.ParseMembers(clusterConfig)
+	if err != nil {
+		log.Fatalf("parse cluster config: %v", err)
 	}
 	state := cluster.NewState(nodeID, leaderID, members)
+
+	if !state.IsLeader() {
+		leader, ok := state.Leader()
+		if !ok {
+			log.Fatalf("leader %q not found in cluster members", leaderID)
+		}
+
+		if err := replication.CatchUp(context.Background(), leader.Address, operationLog, kv); err != nil {
+			log.Printf("Initial catch-up failed: %v", err)
+		} else {
+			log.Printf("Successfully caught from leader %s through log index %d", leader.ID, operationLog.LastIndex())
+		}
+	}
 	handler := httpapi.NewServer(kv, state, operationLog)
 
 	log.Printf("starting kvstore node=%s addr=%s", nodeID, addr)

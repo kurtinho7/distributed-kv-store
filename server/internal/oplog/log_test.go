@@ -1,6 +1,9 @@
 package oplog
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestLogAppendAssignsOrderedIndexes(t *testing.T) {
 	log := New()
@@ -76,5 +79,68 @@ func TestOpenReplaysPersistedEntries(t *testing.T) {
 	}
 	if next.Index != 3 {
 		t.Fatalf("expected next index 3, got %d", next.Index)
+	}
+}
+
+func TestAppendEntryPreservesReplicatedIndex(t *testing.T) {
+	log := New()
+
+	err := log.AppendEntry(Entry{
+		Index:     1,
+		Operation: OperationPut,
+		Key:       "language",
+		Value:     "go",
+		CreatedAt: time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatalf("append replicated entry: %v", err)
+	}
+
+	entries := log.Entries()
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+
+	if entries[0].Index != 1 {
+		t.Fatalf("expected replicated index 1, got %d", entries[0].Index)
+	}
+}
+
+func TestAppendEntryRejectsOutOfOrderIndex(t *testing.T) {
+	log := New()
+
+	err := log.AppendEntry(Entry{
+		Index:     2,
+		Operation: OperationPut,
+		Key:       "language",
+		Value:     "go",
+		CreatedAt: time.Now().UTC(),
+	})
+	if err == nil {
+		t.Fatal("expected out-of-order append to fail")
+	}
+}
+
+func TestEntriesAfter(t *testing.T) {
+	log := New()
+
+	if _, err := log.Append(OperationPut, "a", "1"); err != nil {
+		t.Fatalf("append first: %v", err)
+	}
+	if _, err := log.Append(OperationPut, "b", "2"); err != nil {
+		t.Fatalf("append second: %v", err)
+	}
+	if _, err := log.Append(OperationDelete, "a", ""); err != nil {
+		t.Fatalf("append third: %v", err)
+	}
+
+	entries := log.EntriesAfter(1)
+
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(entries))
+	}
+
+	if entries[0].Index != 2 || entries[1].Index != 3 {
+		t.Fatalf("unexpected entries after index 1: %#v", entries)
 	}
 }
