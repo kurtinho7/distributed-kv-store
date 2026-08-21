@@ -96,3 +96,24 @@ func TestStateHelpers(t *testing.T) {
 		t.Fatalf("expected majority 2, got %d", state.Majority())
 	}
 }
+
+func TestMemberByID(t *testing.T) {
+	state := NewState("node-2", "node-1", []Member{
+		{ID: "node-1", Address: "http://localhost:8080"},
+		{ID: "node-2", Address: "http://localhost:8081"},
+	})
+
+	member, ok := state.MemberByID("node-1")
+	if !ok {
+		t.Fatal("expected member to exist")
+	}
+
+	if member.Address != "http://localhost:8080" {
+		t.Fatalf("expected node-1 address, got %q", member.Address)
+	}
+
+	_, ok = state.MemberByID("missing")
+	if ok {
+		t.Fatal("expected missing member lookup to fail")
+	}
+}

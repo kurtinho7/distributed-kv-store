@@ -7,19 +7,21 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
-	"strconv"
 
 	"kvstore/internal/cluster"
 	"kvstore/internal/oplog"
 	"kvstore/internal/store"
+	raftstate "kvstore/internal/raft"
 )
 
 type Server struct {
 	store   *store.Memory
 	cluster *cluster.State
 	log     *oplog.Log
+	raft    *raftstate.State
 }
 
 type putRequest struct {
@@ -35,8 +37,8 @@ type errorResponse struct {
 	Error string `json:"error"`
 }
 
-func NewServer(store *store.Memory, cluster *cluster.State, log *oplog.Log) *Server {
-	return &Server{store: store, cluster: cluster, log: log}
+func NewServer(store *store.Memory, cluster *cluster.State, log *oplog.Log, raft *raftstate.State) *Server {
+	return &Server{store: store, cluster: cluster, log: log, raft: raft}
 }
 
 func (s *Server) Routes() http.Handler {
@@ -45,7 +47,10 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /cluster", s.clusterState)
 	mux.HandleFunc("GET /log", s.logEntries)
 	mux.HandleFunc("GET /internal/log", s.internalLogEntries)
+	mux.HandleFunc("GET /raft", s.raftState)
 	mux.HandleFunc("POST /internal/replicate", s.replicate)
+	mux.HandleFunc("POST /internal/raft/request-vote", s.requestVote)
+	mux.HandleFunc("POST /internal/raft/append-entries", s.appendEntries)
 	mux.HandleFunc("GET /kv", s.list)
 	mux.HandleFunc("GET /kv/", s.get)
 	mux.HandleFunc("PUT /kv/", s.put)
@@ -58,7 +63,18 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) clusterState(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"members": s.cluster.Snapshot(s.log.LastIndex())})
+	members := s.cluster.Snapshot(s.log.LastIndex())
+	leaderID := s.raft.LeaderID()
+
+	for i := range members {
+		if leaderID != "" && members[i].ID == leaderID {
+			members[i].Role = cluster.RoleLeader
+		} else {
+			members[i].Role = cluster.RoleFollower
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"members": members})
 }
 
 func (s *Server) logEntries(w http.ResponseWriter, _ *http.Request) {
@@ -87,7 +103,7 @@ func (s *Server) put(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !s.cluster.IsLeader() {
+	if s.raft.Role() != raftstate.RoleLeader {
 		response, err := s.forwardToLeader(r, http.MethodPut, r.URL.Path, req)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to forward request to leader")
@@ -106,13 +122,12 @@ func (s *Server) put(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if s.cluster.IsLeader() {
-		acks := s.replicateToPeers(r, entry)
-		if acks < s.cluster.Majority() {
-			writeError(w, http.StatusInternalServerError, "failed to reach replication majority")
-			return
-		}
+	acks := s.replicateToPeers(r, entry)
+	if acks < s.cluster.Majority() {
+		writeError(w, http.StatusServiceUnavailable, "failed to reach replication majority")
+		return
 	}
+
 	if err := s.store.Apply(entry); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to apply log entry")
 		return
@@ -123,7 +138,7 @@ func (s *Server) put(w http.ResponseWriter, r *http.Request) {
 func (s *Server) delete(w http.ResponseWriter, r *http.Request) {
 	key := keyFromPath(r)
 
-	if !s.cluster.IsLeader() {
+	if s.raft.Role() != raftstate.RoleLeader {
 		response, err := s.forwardToLeader(r, http.MethodDelete, r.URL.Path, nil)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to forward request to leader")
@@ -146,12 +161,10 @@ func (s *Server) delete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to append log entry")
 		return
 	}
-	if s.cluster.IsLeader() {
-		acks := s.replicateToPeers(r, entry)
-		if acks < s.cluster.Majority() {
-			writeError(w, http.StatusInternalServerError, "failed to reach replication majority")
-			return
-		}
+	acks := s.replicateToPeers(r, entry)
+	if acks < s.cluster.Majority() {
+		writeError(w, http.StatusServiceUnavailable, "failed to reach replication majority")
+		return
 	}
 	if err := s.store.Apply(entry); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to apply log entry")
@@ -251,9 +264,14 @@ func withCORS(next http.Handler) http.Handler {
 }
 
 func (s *Server) forwardToLeader(r *http.Request, method, path string, payload any) (*http.Response, error) {
-	leader, ok := s.cluster.Leader()
+	leaderID := s.raft.LeaderID()
+	if leaderID == "" {
+		return nil, errors.New("leader not known")
+	}
+
+	leader, ok := s.cluster.MemberByID(leaderID)
 	if !ok {
-		return nil, errors.New("no leader available")
+		return nil, errors.New("leader not found in cluster")
 	}
 
 	var body *bytes.Reader
@@ -280,7 +298,7 @@ func (s *Server) forwardToLeader(r *http.Request, method, path string, payload a
 }
 
 func (s *Server) internalLogEntries(w http.ResponseWriter, r *http.Request) {
-	if !s.cluster.IsLeader() {
+	if s.raft.Role() != raftstate.RoleLeader {
 		writeError(w, http.StatusForbidden, "only leader can serve log entries")
 		return
 	}
@@ -297,4 +315,30 @@ func (s *Server) internalLogEntries(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"entries": s.log.EntriesAfter(after)})
+}
+
+func (s *Server) requestVote(w http.ResponseWriter, r *http.Request) {
+	var req raftstate.RequestVoteRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+
+	resp := s.raft.RequestVote(req)
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) appendEntries(w http.ResponseWriter, r *http.Request) {
+	var req raftstate.AppendEntriesRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+
+	resp := s.raft.AppendEntries(req)
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) raftState(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, s.raft.Snapshot())
 }

@@ -9,6 +9,7 @@ import (
 
 	"kvstore/internal/cluster"
 	"kvstore/internal/oplog"
+	raftstate "kvstore/internal/raft"
 	"kvstore/internal/store"
 )
 
@@ -108,7 +109,10 @@ func newTestServer() http.Handler {
 	}
 	state := cluster.NewState("node-test", "node-test", members)
 	log := oplog.New()
-	return NewServer(kv, state, log).Routes()
+	raft := raftstate.NewState("node-test")
+	raft.BecomeCandidate()
+	raft.BecomeLeader()
+	return NewServer(kv, state, log, raft).Routes()
 }
 
 func newFollowerTestServer() http.Handler {
@@ -119,7 +123,8 @@ func newFollowerTestServer() http.Handler {
 	}
 	state := cluster.NewState("node-2", "node-1", members)
 	log := oplog.New()
-	return NewServer(kv, state, log).Routes()
+	raft := raftstate.NewState("node-2")
+	return NewServer(kv, state, log, raft).Routes()
 }
 
 func TestReplicateAppliesEntryOnFollower(t *testing.T) {
@@ -217,5 +222,124 @@ func TestFollowerRejectsInternalLogRequest(t *testing.T) {
 
 	if response.Code != http.StatusForbidden {
 		t.Fatalf("expected follower internal log status 403, got %d", response.Code)
+	}
+}
+
+func TestRequestVoteEndpoint(t *testing.T) {
+	handler := newTestServer()
+
+	body := bytes.NewBufferString(`{
+		"term": 2,
+		"candidateId": "node-2"
+	}`)
+
+	request := httptest.NewRequest(http.MethodPost, "/internal/raft/request-vote", body)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected request vote status 200, got %d", response.Code)
+	}
+
+	var vote raftstate.RequestVoteResponse
+	if err := json.NewDecoder(response.Body).Decode(&vote); err != nil {
+		t.Fatalf("decode vote response: %v", err)
+	}
+
+	if !vote.VoteGranted {
+		t.Fatal("expected vote to be granted")
+	}
+
+	if vote.Term != 2 {
+		t.Fatalf("expected term 2, got %d", vote.Term)
+	}
+}
+
+func TestAppendEntriesEndpoint(t *testing.T) {
+	handler := newFollowerTestServer()
+
+	body := bytes.NewBufferString(`{
+		"term": 1,
+		"leaderId": "node-1"
+	}`)
+
+	request := httptest.NewRequest(http.MethodPost, "/internal/raft/append-entries", body)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected append entries status 200, got %d", response.Code)
+	}
+
+	var heartbeat raftstate.AppendEntriesResponse
+	if err := json.NewDecoder(response.Body).Decode(&heartbeat); err != nil {
+		t.Fatalf("decode append entries response: %v", err)
+	}
+
+	if !heartbeat.Success {
+		t.Fatal("expected heartbeat to succeed")
+	}
+
+	if heartbeat.Term != 1 {
+		t.Fatalf("expected term 1, got %d", heartbeat.Term)
+	}
+}
+
+func TestRaftStateEndpoint(t *testing.T) {
+	handler := newTestServer()
+
+	request := httptest.NewRequest(http.MethodGet, "/raft", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected raft status 200, got %d", response.Code)
+	}
+
+	var body raftstate.Snapshot
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatalf("decode raft state: %v", err)
+	}
+
+	if body.NodeID != "node-test" {
+		t.Fatalf("expected node-test, got %q", body.NodeID)
+	}
+}
+
+func TestClusterEndpointUsesRaftLeader(t *testing.T) {
+	kv := store.NewMemory()
+	members := []cluster.Member{
+		{ID: "node-1", Address: "http://localhost:8080"},
+		{ID: "node-2", Address: "http://localhost:8081"},
+	}
+	clusterState := cluster.NewState("node-1", "node-1", members)
+	log := oplog.New()
+
+	raft := raftstate.NewState("node-1")
+	raft.BecomeFollower(2, "node-2")
+
+	handler := NewServer(kv, clusterState, log, raft).Routes()
+
+	request := httptest.NewRequest(http.MethodGet, "/cluster", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected cluster status 200, got %d", response.Code)
+	}
+
+	var body struct {
+		Members []cluster.Member `json:"members"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatalf("decode cluster response: %v", err)
+	}
+
+	if body.Members[0].Role != cluster.RoleFollower {
+		t.Fatalf("expected node-1 follower, got %q", body.Members[0].Role)
+	}
+
+	if body.Members[1].Role != cluster.RoleLeader {
+		t.Fatalf("expected node-2 leader, got %q", body.Members[1].Role)
 	}
 }

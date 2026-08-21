@@ -128,3 +128,12 @@ func (s *State) Peers() []Member {
 func (s *State) Majority() int {
 	return (len(s.members) / 2) + 1
 }
+
+func (s *State) MemberByID(id string) (Member, bool) {
+	for _, member := range s.members {
+		if member.ID == id {
+			return member, true
+		}
+	}
+	return Member{}, false
+}

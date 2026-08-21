@@ -11,6 +11,7 @@ import (
 	"kvstore/internal/oplog"
 	"kvstore/internal/replication"
 	"kvstore/internal/store"
+	raftstate "kvstore/internal/raft"
 )
 
 func main() {
@@ -41,6 +42,12 @@ func main() {
 		log.Fatalf("parse cluster config: %v", err)
 	}
 	state := cluster.NewState(nodeID, leaderID, members)
+	raft := raftstate.NewState(nodeID)
+
+	if nodeID == leaderID {
+		raft.BecomeCandidate()
+		raft.BecomeLeader()
+	}
 
 	if !state.IsLeader() {
 		leader, ok := state.Leader()
@@ -54,7 +61,13 @@ func main() {
 			log.Printf("Successfully caught from leader %s through log index %d", leader.ID, operationLog.LastIndex())
 		}
 	}
-	handler := httpapi.NewServer(kv, state, operationLog)
+	handler := httpapi.NewServer(kv, state, operationLog, raft)
+
+	sender := raftstate.NewHeartbeatSender(raft, state.Peers())
+	go sender.Start(context.Background())
+
+	election := raftstate.NewElectionRunner(raft, state.Peers(), state.Majority())
+	go election.Start(context.Background())
 
 	log.Printf("starting kvstore node=%s addr=%s", nodeID, addr)
 	if err := http.ListenAndServe(addr, handler.Routes()); err != nil {
