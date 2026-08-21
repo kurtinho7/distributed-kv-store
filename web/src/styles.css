@@ -212,3 +212,98 @@ th {
     grid-template-columns: 1fr;
   }
 }
+
+.node.unhealthy {
+  border-left-color: #a8413d;
+  opacity: 0.7;
+}
+
+.node.unhealthy span {
+  color: #a8413d;
+}
+
+.verticalActions {
+  align-items: stretch;
+  flex-direction: column;
+}
+
+.verticalActions button {
+  justify-content: center;
+}
+
+.replicationCell {
+  border-radius: 999px;
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 800;
+  min-width: 72px;
+  padding: 3px 8px;
+  text-transform: uppercase;
+}
+
+.replicationCell.applied {
+  background: #dcefe8;
+  color: #236254;
+}
+
+.replicationCell.missing {
+  background: #f3dddd;
+  color: #963b37;
+}
+
+.node.leader {
+  border-left-color: #8b5c1f;
+  background: #fffaf0;
+}
+
+.node.leader span {
+  color: #8b5c1f;
+}
+
+.node.follower {
+  border-left-color: #2f6f63;
+}
+
+.nodeHeader {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.statusDot {
+  border-radius: 999px;
+  display: inline-block;
+  height: 10px;
+  width: 10px;
+}
+
+.statusDot.online {
+  background: #2f6f63;
+}
+
+.statusDot.offline {
+  background: #a8413d;
+}
+
+.faultSummary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+  min-height: 28px;
+}
+
+.faultSummary span {
+  color: #66736f;
+  font-size: 13px;
+}
+
+.faultPill {
+  background: #f3dddd;
+  border-radius: 999px;
+  color: #963b37 !important;
+  display: inline-flex;
+  font-weight: 800;
+  padding: 5px 9px;
+}

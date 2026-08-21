@@ -1,9 +1,15 @@
 import React from 'react';
 import { createRoot } from 'react-dom/client';
-import { Activity, Database, ListOrdered, Play, RefreshCcw, Trash2 } from 'lucide-react';
+import { Activity, Database, ListOrdered, Play, RefreshCcw, ShieldAlert, ShieldCheck, Trash2 } from 'lucide-react';
 import './styles.css';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8080';
+
+const NODES = [
+  { id: 'node-1', url: 'http://localhost:8080' },
+  { id: 'node-2', url: 'http://localhost:8081' },
+  { id: 'node-3', url: 'http://localhost:8082' },
+];
 
 type Entry = {
   key: string;
@@ -27,6 +33,28 @@ type LogEntry = {
   createdAt: string;
 };
 
+type RaftState = {
+  nodeId: string;
+  currentTerm: number;
+  votedFor: string;
+  role: 'follower' | 'candidate' | 'leader';
+  leaderId: string;
+  lastHeartbeat: string;
+};
+
+type NodeSnapshot = {
+  id: string;
+  url: string;
+  reachable: boolean;
+  raft?: RaftState;
+  entries: Entry[];
+  logEntries: LogEntry[];
+};
+
+type FaultState = {
+  droppedReplicationTo: string[];
+};
+
 function App() {
   const [keyName, setKeyName] = React.useState('project');
   const [value, setValue] = React.useState('distributed-kv');
@@ -34,19 +62,70 @@ function App() {
   const [entries, setEntries] = React.useState<Entry[]>([]);
   const [members, setMembers] = React.useState<Member[]>([]);
   const [logEntries, setLogEntries] = React.useState<LogEntry[]>([]);
+  const [nodeSnapshots, setNodeSnapshots] = React.useState<NodeSnapshot[]>([]);
+  const [faultState, setFaultState] = React.useState<FaultState>({ droppedReplicationTo: [] });
+
+  const replicatedLogRows = React.useMemo(() => {
+    const entriesByIndex = new Map<number, LogEntry>();
+
+    for (const node of nodeSnapshots) {
+      for (const entry of node.logEntries) {
+        if (!entriesByIndex.has(entry.index)) {
+          entriesByIndex.set(entry.index, entry);
+        }
+      }
+    }
+
+    return Array.from(entriesByIndex.values()).sort((a, b) => a.index - b.index);
+  }, [nodeSnapshots]);
 
   const refresh = React.useCallback(async () => {
-    const [kvResponse, clusterResponse, logResponse] = await Promise.all([
+    const [kvResponse, clusterResponse, logResponse, faultsResponse] = await Promise.all([
       fetch(`${API_BASE_URL}/kv`),
       fetch(`${API_BASE_URL}/cluster`),
       fetch(`${API_BASE_URL}/log`),
+      fetch(`${API_BASE_URL}/faults`),
     ]);
     const kvBody = await kvResponse.json();
     const clusterBody = await clusterResponse.json();
     const logBody = await logResponse.json();
+    const faultsBody = await faultsResponse.json();
     setEntries(kvBody.entries ?? []);
     setMembers(clusterBody.members ?? []);
     setLogEntries(logBody.entries ?? []);
+    setFaultState(faultsBody);
+    const snapshots = await Promise.all(
+    NODES.map(async (node) => {
+      try {
+        const [raftResponse, kvResponse, logResponse] = await Promise.all([
+          fetch(`${node.url}/raft`),
+          fetch(`${node.url}/kv`),
+          fetch(`${node.url}/log`),
+        ]);
+
+        const raftBody = await raftResponse.json();
+        const kvBody = await kvResponse.json();
+        const logBody = await logResponse.json();
+
+        return {
+          ...node,
+          reachable: true,
+          raft: raftBody,
+          entries: kvBody.entries ?? [],
+          logEntries: logBody.entries ?? [],
+        };
+      } catch {
+        return {
+          ...node,
+          reachable: false,
+          entries: [],
+          logEntries: [],
+        };
+      }
+    }),
+  );
+
+  setNodeSnapshots(snapshots);
   }, []);
 
   React.useEffect(() => {
@@ -77,6 +156,32 @@ function App() {
     setResult(response.ok ? `Deleted ${keyName}.` : (await response.json()).error);
     await refresh();
   }
+
+  async function partitionNode(nodeID: string) {
+  const response = await fetch(`${API_BASE_URL}/faults/replication/${nodeID}`, {
+    method: 'POST',
+  });
+
+  const body = await response.json();
+  setResult(response.ok ? `Partitioned ${nodeID}.` : body.error);
+  await refresh();
+}
+
+async function healNode(nodeID: string) {
+  const response = await fetch(`${API_BASE_URL}/faults/replication/${nodeID}`, {
+    method: 'DELETE',
+  });
+
+  const body = await response.json();
+  setResult(response.ok ? `Healed ${nodeID}.` : body.error);
+  await refresh();
+
+  if (response.ok) {
+    window.setTimeout(() => {
+      refresh().catch(() => setResult('API is not reachable yet.'));
+    }, 1200);
+  }
+}
 
   return (
     <main>
@@ -118,20 +223,56 @@ function App() {
           <output>{result}</output>
         </div>
 
-        <div className="panel">
+        <div className="panel entries">
           <div className="panelTitle">
             <Activity size={18} />
             <h2>Cluster</h2>
           </div>
           <div className="nodeGrid">
-            {members.map((member) => (
-              <article className="node" key={member.id}>
-                <strong>{member.id}</strong>
-                <span>{member.role}</span>
-                <small>{member.address}</small>
-                <small>log index {member.logIndex}</small>
+            {nodeSnapshots.map((node) => (
+              <article
+                className={`node ${node.reachable ? '' : 'unhealthy'} ${node.raft?.role ?? ''}`}
+                key={node.id}
+              >
+                <div className="nodeHeader">
+                  <strong>{node.id}</strong>
+                  <span className={`statusDot ${node.reachable ? 'online' : 'offline'}`} />
+                </div>
+                <span>{node.reachable ? node.raft?.role ?? 'unknown' : 'offline'}</span>
+                <small>{node.url}</small>
+                <small>term {node.raft?.currentTerm ?? '-'}</small>
+                <small>leader {node.raft?.leaderId || '-'}</small>
+                <small>log index {node.logEntries[node.logEntries.length - 1]?.index ?? 0}</small>
               </article>
             ))}
+          </div>
+        </div>
+
+        <div className="panel operations">
+          <div className="panelTitle">
+            <ShieldAlert size={18} />
+            <h2>Fault Controls</h2>
+          </div>
+          <div className="actions verticalActions">
+            <button className="danger" onClick={() => partitionNode('node-3')}>
+              <ShieldAlert size={16} />
+              Partition node-3
+            </button>
+            <button onClick={() => healNode('node-3')}>
+              <ShieldCheck size={16} />
+              Heal node-3
+            </button>
+            <div className="faultSummary">
+              {faultState.droppedReplicationTo.length === 0 ? (
+                <span>No active partitions</span>
+              ) : (
+                faultState.droppedReplicationTo.map((nodeID) => (
+                  <span className="faultPill" key={nodeID}>
+                    {nodeID} partitioned
+                  </span>
+                ))
+              )}
+            </div>
           </div>
         </div>
 
@@ -155,6 +296,56 @@ function App() {
                   <tr key={entry.key}>
                     <td>{entry.key}</td>
                     <td>{entry.value}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+
+        <div className="panel entries">
+          <div className="panelTitle">
+            <ListOrdered size={18} />
+            <h2>Replication Matrix</h2>
+          </div>
+          {replicatedLogRows.length === 0 ? (
+            <p className="empty">No replicated operations yet.</p>
+          ) : (
+            <table>
+              <thead>
+                <tr>
+                  <th>Index</th>
+                  <th>Operation</th>
+                  <th>Key</th>
+                  {NODES.map((node) => (
+                    <th key={node.id}>{node.id}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {replicatedLogRows.map((entry) => (
+                  <tr key={entry.index}>
+                    <td>{entry.index}</td>
+                    <td>
+                      <span className={`operationBadge ${entry.operation}`}>{entry.operation}</span>
+                    </td>
+                    <td>{entry.key}</td>
+                    {NODES.map((node) => {
+                      const snapshot = nodeSnapshots.find((item) => item.id === node.id);
+                      const appliedEntry = snapshot?.logEntries.find((item) => item.index === entry.index);
+                      const matches =
+                        appliedEntry?.operation === entry.operation &&
+                        appliedEntry?.key === entry.key &&
+                        appliedEntry?.value === entry.value;
+
+                      return (
+                        <td key={node.id}>
+                          <span className={`replicationCell ${matches ? 'applied' : 'missing'}`}>
+                            {matches ? 'applied' : 'missing'}
+                          </span>
+                        </td>
+                      );
+                    })}
                   </tr>
                 ))}
               </tbody>
