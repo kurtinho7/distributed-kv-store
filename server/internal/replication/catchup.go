@@ -12,7 +12,8 @@ import (
 )
 
 type catchUpResponse struct {
-	Entries []oplog.Entry `json:"entries"`
+	Entries   []oplog.Entry `json:"entries"`
+	LastIndex uint64        `json:"lastIndex"`
 }
 
 func CatchUp(ctx context.Context, localNodeID string, leaderAddress string, log *oplog.Log, kv *store.Memory) error {
@@ -44,6 +45,15 @@ func CatchUp(ctx context.Context, localNodeID string, leaderAddress string, log 
 	var body catchUpResponse
 	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
 		return err
+	}
+
+	if log.LastIndex() > body.LastIndex {
+		if err := log.TruncateFrom(body.LastIndex + 1); err != nil {
+			return fmt.Errorf("truncate to leader index %d: %w", body.LastIndex, err)
+		}
+		if err := kv.Rebuild(log.Entries()); err != nil {
+			return fmt.Errorf("rebuild after truncate: %w", err)
+		}
 	}
 
 	for _, entry := range body.Entries {

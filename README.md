@@ -53,6 +53,16 @@ npm run dev
 ```
 
 The web app expects the API at `http://localhost:8080` by default.
+The chaos demo panel expects the demo controller at `http://localhost:9090` by default. Override with `VITE_DEMOCTL_URL` if needed.
+
+Demo controller:
+
+```sh
+cd server
+go run ./cmd/democtl
+```
+
+The demo controller listens on `http://localhost:9090` and can run local scripts such as the chaos demo. Run it outside Docker because the chaos demo restarts the Compose cluster.
 
 Docker Compose:
 
@@ -173,6 +183,47 @@ curl http://localhost:8082/raft
 One remaining node should become leader, and the other should report that leader in its Raft state.
 
 ## Fault Tolerance Demo
+
+Run the automated Phase 4 harness:
+
+```sh
+./scripts/phase4-demo.sh
+```
+
+The script starts a clean cluster, partitions `node-3`, writes through the leader, verifies majority commit, heals the partition, and waits for `node-3` to catch up.
+
+Hammer the cluster with concurrent writes:
+
+```sh
+./scripts/hammer.sh --duration 30 --writers 10 --keyspace 100
+```
+
+Optionally read after each write:
+
+```sh
+./scripts/hammer.sh --duration 30 --writers 10 --keyspace 100 --read-after-write
+```
+
+Verify cluster convergence and log consistency:
+
+```sh
+./scripts/verify-cluster.sh
+```
+
+Run traffic and then verify correctness:
+
+```sh
+./scripts/hammer.sh --duration 30 --writers 10 --keyspace 100
+./scripts/verify-cluster.sh
+```
+
+Run the combined chaos demo:
+
+```sh
+./scripts/chaos-demo.sh --duration 15 --writers 8 --keyspace 50
+```
+
+The chaos demo starts a clean cluster, partitions `node-3`, hammers the remaining majority with traffic, verifies `node-3` lags, heals the partition, waits for catch-up, and verifies convergence.
 
 Stop a follower and observe health:
 

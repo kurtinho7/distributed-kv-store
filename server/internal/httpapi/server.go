@@ -9,13 +9,14 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"kvstore/internal/cluster"
-	"kvstore/internal/oplog"
-	"kvstore/internal/store"
-	raftstate "kvstore/internal/raft"
 	"kvstore/internal/faults"
+	"kvstore/internal/oplog"
+	raftstate "kvstore/internal/raft"
+	"kvstore/internal/store"
 )
 
 type Server struct {
@@ -24,6 +25,7 @@ type Server struct {
 	faults  *faults.State
 	log     *oplog.Log
 	raft    *raftstate.State
+	writeMu sync.Mutex
 }
 
 type putRequest struct {
@@ -121,6 +123,9 @@ func (s *Server) put(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
 	entry, err := s.log.Append(oplog.OperationPut, key, req.Value)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to append log entry")
@@ -160,6 +165,9 @@ func (s *Server) delete(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.Copy(w, response.Body)
 		return
 	}
+
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 
 	if _, err := s.store.Get(key); errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "key not found")
@@ -348,7 +356,10 @@ func (s *Server) internalLogEntries(w http.ResponseWriter, r *http.Request) {
 		after = parsed
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"entries": s.log.EntriesAfter(after)})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"entries":   s.log.EntriesAfter(after),
+		"lastIndex": s.log.LastIndex(),
+	})
 }
 
 func (s *Server) requestVote(w http.ResponseWriter, r *http.Request) {

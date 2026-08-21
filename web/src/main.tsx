@@ -1,9 +1,10 @@
 import React from 'react';
 import { createRoot } from 'react-dom/client';
-import { Activity, Database, ListOrdered, Play, RefreshCcw, ShieldAlert, ShieldCheck, Trash2 } from 'lucide-react';
+import { Activity, Database, ListOrdered, Play, RefreshCcw, ShieldAlert, ShieldCheck, Terminal, Trash2 } from 'lucide-react';
 import './styles.css';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8080';
+const DEMOCTL_URL = import.meta.env.VITE_DEMOCTL_URL ?? 'http://localhost:9090';
 
 const NODES = [
   { id: 'node-1', url: 'http://localhost:8080' },
@@ -55,6 +56,16 @@ type FaultState = {
   droppedReplicationTo: string[];
 };
 
+type DemoJobState = 'idle' | 'running' | 'passed' | 'failed';
+
+type DemoJobStatus = {
+  state: DemoJobState;
+  exitCode?: number;
+  output: string;
+  startedAt?: string;
+  endedAt?: string;
+};
+
 function App() {
   const [keyName, setKeyName] = React.useState('project');
   const [value, setValue] = React.useState('distributed-kv');
@@ -64,6 +75,10 @@ function App() {
   const [logEntries, setLogEntries] = React.useState<LogEntry[]>([]);
   const [nodeSnapshots, setNodeSnapshots] = React.useState<NodeSnapshot[]>([]);
   const [faultState, setFaultState] = React.useState<FaultState>({ droppedReplicationTo: [] });
+  const [chaosStatus, setChaosStatus] = React.useState<DemoJobStatus>({
+    state: 'idle',
+    output: '',
+  });
 
   const replicatedLogRows = React.useMemo(() => {
     const entriesByIndex = new Map<number, LogEntry>();
@@ -77,6 +92,10 @@ function App() {
     }
 
     return Array.from(entriesByIndex.values()).sort((a, b) => a.index - b.index);
+  }, [nodeSnapshots]);
+
+  const currentLeaderID = React.useMemo(() => {
+    return nodeSnapshots.find((node) => node.raft?.role === 'leader')?.id ?? '';
   }, [nodeSnapshots]);
 
   const refresh = React.useCallback(async () => {
@@ -132,6 +151,40 @@ function App() {
     refresh().catch(() => setResult('API is not reachable yet.'));
   }, [refresh]);
 
+  const refreshChaosStatus = React.useCallback(async () => {
+    const response = await fetch(`${DEMOCTL_URL}/demo/chaos/status`);
+    const body = await response.json();
+    setChaosStatus(body);
+  }, []);
+
+  React.useEffect(() => {
+    refreshChaosStatus().catch(() => {
+      setChaosStatus({
+        state: 'idle',
+        output: 'Demo controller is not reachable. Start it with: go run ./cmd/democtl',
+      });
+    });
+  }, [refreshChaosStatus]);
+
+  React.useEffect(() => {
+    if (chaosStatus.state !== 'running') {
+      return;
+    }
+
+    const interval = window.setInterval(() => {
+      refreshChaosStatus()
+        .then(() => refresh())
+        .catch(() => {
+          setChaosStatus((current) => ({
+            ...current,
+            output: `${current.output}\nDemo controller became unreachable.`,
+          }));
+        });
+    }, 1500);
+
+    return () => window.clearInterval(interval);
+  }, [chaosStatus.state, refresh, refreshChaosStatus]);
+
   async function putValue() {
     const response = await fetch(`${API_BASE_URL}/kv/${encodeURIComponent(keyName)}`, {
       method: 'PUT',
@@ -182,6 +235,15 @@ async function healNode(nodeID: string) {
     }, 1200);
   }
 }
+
+  async function startChaosDemo() {
+    const response = await fetch(`${DEMOCTL_URL}/demo/chaos/start`, {
+      method: 'POST',
+    });
+    const body = await response.json();
+    setChaosStatus(body);
+    setResult(response.ok ? 'Chaos demo started.' : 'Chaos demo is already running.');
+  }
 
   return (
     <main>
@@ -254,13 +316,41 @@ async function healNode(nodeID: string) {
             <h2>Fault Controls</h2>
           </div>
           <div className="actions verticalActions">
-            <button className="danger" onClick={() => partitionNode('node-3')}>
-              <ShieldAlert size={16} />
-              Partition node-3
-            </button>
-            <button onClick={() => healNode('node-3')}>
+            <div className="faultGrid">
+              {NODES.map((node) => {
+                const isPartitioned = faultState.droppedReplicationTo.includes(node.id);
+                const isLeader = node.id === currentLeaderID;
+
+                return (
+                  <div className="faultNode" key={node.id}>
+                    <strong>{node.id}</strong>
+                    <div className="actions faultActions">
+                      <button
+                        className="danger"
+                        disabled={isPartitioned || isLeader}
+                        title={isLeader ? 'Current leader cannot be partitioned from itself' : undefined}
+                        onClick={() => partitionNode(node.id)}
+                      >
+                        <ShieldAlert size={16} />
+                        {isLeader ? 'Leader' : 'Partition'}
+                      </button>
+                      <button disabled={!isPartitioned} onClick={() => healNode(node.id)}>
+                        <ShieldCheck size={16} />
+                        Heal
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <button
+              onClick={async () => {
+                await Promise.all(NODES.map((node) => healNode(node.id)));
+                await refresh();
+              }}
+            >
               <ShieldCheck size={16} />
-              Heal node-3
+              Heal All
             </button>
             <div className="faultSummary">
               {faultState.droppedReplicationTo.length === 0 ? (
@@ -274,6 +364,27 @@ async function healNode(nodeID: string) {
               )}
             </div>
           </div>
+        </div>
+
+        <div className="panel entries">
+          <div className="panelTitle">
+            <Terminal size={18} />
+            <h2>Chaos Demo</h2>
+          </div>
+          <div className="chaosHeader">
+            <span className={`jobBadge ${chaosStatus.state}`}>{chaosStatus.state}</span>
+            <button disabled={chaosStatus.state === 'running'} onClick={startChaosDemo}>
+              <Play size={16} />
+              Run Chaos Demo
+            </button>
+            <button className="secondary" onClick={refreshChaosStatus}>
+              <RefreshCcw size={16} />
+              Status
+            </button>
+          </div>
+          <pre className="jobOutput">
+            {chaosStatus.output || 'Start the demo controller, then run the chaos demo from here.'}
+          </pre>
         </div>
 
         <div className="panel entries">

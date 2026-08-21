@@ -107,6 +107,14 @@ button:hover {
   background: #285f55;
 }
 
+.secondary {
+  background: #51605b;
+}
+
+.secondary:hover {
+  background: #424f4b;
+}
+
 .iconButton {
   justify-content: center;
   padding: 0;
@@ -306,4 +314,83 @@ th {
   display: inline-flex;
   font-weight: 800;
   padding: 5px 9px;
+}
+
+.faultGrid {
+  display: grid;
+  gap: 10px;
+}
+
+.faultNode {
+  border: 1px solid #dfe5dc;
+  border-radius: 8px;
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+}
+
+.faultNode strong {
+  font-size: 14px;
+}
+
+.faultActions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.chaosHeader {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.jobBadge {
+  border-radius: 999px;
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 900;
+  min-width: 78px;
+  padding: 6px 10px;
+  text-transform: uppercase;
+}
+
+.jobBadge.idle {
+  background: #eef3ef;
+  color: #51605b;
+}
+
+.jobBadge.running {
+  background: #e8eef8;
+  color: #315f9f;
+}
+
+.jobBadge.passed {
+  background: #dcefe8;
+  color: #236254;
+}
+
+.jobBadge.failed {
+  background: #f3dddd;
+  color: #963b37;
+}
+
+.jobOutput {
+  background: #172022;
+  border-radius: 8px;
+  color: #dfeee8;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 0;
+  max-height: 360px;
+  overflow: auto;
+  padding: 14px;
+  white-space: pre-wrap;
 }
