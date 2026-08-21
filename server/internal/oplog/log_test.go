@@ -144,3 +144,73 @@ func TestEntriesAfter(t *testing.T) {
 		t.Fatalf("unexpected entries after index 1: %#v", entries)
 	}
 }
+
+func TestTruncateFromRemovesEntriesFromIndex(t *testing.T) {
+	log := New()
+
+	if _, err := log.Append(OperationPut, "a", "1"); err != nil {
+		t.Fatalf("append first: %v", err)
+	}
+	if _, err := log.Append(OperationPut, "b", "2"); err != nil {
+		t.Fatalf("append second: %v", err)
+	}
+
+	if err := log.TruncateFrom(2); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+
+	entries := log.Entries()
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+
+	if entries[0].Key != "a" {
+		t.Fatalf("expected key a, got %q", entries[0].Key)
+	}
+
+	next, err := log.Append(OperationPut, "c", "3")
+	if err != nil {
+		t.Fatalf("append after truncate: %v", err)
+	}
+
+	if next.Index != 2 {
+		t.Fatalf("expected next index 2, got %d", next.Index)
+	}
+}
+
+func TestTruncateFromRewritesPersistentLog(t *testing.T) {
+	path := t.TempDir() + "/kv.log"
+
+	log, err := Open(path)
+	if err != nil {
+		t.Fatalf("open log: %v", err)
+	}
+
+	if _, err := log.Append(OperationPut, "a", "1"); err != nil {
+		t.Fatalf("append first: %v", err)
+	}
+	if _, err := log.Append(OperationPut, "b", "2"); err != nil {
+		t.Fatalf("append second: %v", err)
+	}
+	if err := log.TruncateFrom(2); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatalf("close log: %v", err)
+	}
+
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen log: %v", err)
+	}
+	defer reopened.Close()
+
+	entries := reopened.Entries()
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 persisted entry, got %d", len(entries))
+	}
+
+	if entries[0].Key != "a" {
+		t.Fatalf("expected persisted key a, got %q", entries[0].Key)
+	}
+}

@@ -425,3 +425,72 @@ func TestFaultEndpointsDropAndHealReplication(t *testing.T) {
 		t.Fatalf("expected heal status 200, got %d", healResponse.Code)
 	}
 }
+
+func TestFailedMajorityRollsBackPut(t *testing.T) {
+	kv := store.NewMemory()
+	log := oplog.New()
+	faultState := faults.NewState()
+
+	members := []cluster.Member{
+		{ID: "node-1", Address: "http://localhost:8080"},
+		{ID: "node-2", Address: "http://127.0.0.1:1"},
+		{ID: "node-3", Address: "http://127.0.0.1:1"},
+	}
+	clusterState := cluster.NewState("node-1", "node-1", members)
+
+	raft := raftstate.NewState("node-1")
+	raft.BecomeCandidate()
+	raft.BecomeLeader()
+
+	handler := NewServer(kv, clusterState, log, raft, faultState).Routes()
+
+	request := httptest.NewRequest(http.MethodPut, "/kv/failed", bytes.NewBufferString(`{"value":"no-majority"}`))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected PUT status 503, got %d: %s", response.Code, response.Body.String())
+	}
+
+	if log.LastIndex() != 0 {
+		t.Fatalf("expected log rollback to index 0, got %d", log.LastIndex())
+	}
+
+	get := httptest.NewRequest(http.MethodGet, "/kv/failed", nil)
+	getResponse := httptest.NewRecorder()
+	handler.ServeHTTP(getResponse, get)
+
+	if getResponse.Code != http.StatusNotFound {
+		t.Fatalf("expected rolled back key to be missing, got %d", getResponse.Code)
+	}
+}
+
+func TestInternalLogRejectsPartitionedNode(t *testing.T) {
+	kv := store.NewMemory()
+	log := oplog.New()
+
+	faultState := faults.NewState()
+	faultState.DropReplicationTo("node-3")
+
+	members := []cluster.Member{
+		{ID: "node-1", Address: "http://localhost:8080"},
+		{ID: "node-3", Address: "http://localhost:8082"},
+	}
+	clusterState := cluster.NewState("node-1", "node-1", members)
+
+	raft := raftstate.NewState("node-1")
+	raft.BecomeCandidate()
+	raft.BecomeLeader()
+
+	handler := NewServer(kv, clusterState, log, raft, faultState).Routes()
+
+	request := httptest.NewRequest(http.MethodGet, "/internal/log?after=0", nil)
+	request.Header.Set("X-Node-ID", "node-3")
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected partitioned catch-up status 503, got %d", response.Code)
+	}
+}

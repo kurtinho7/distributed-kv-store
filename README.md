@@ -1,6 +1,6 @@
 # Distributed KV Store
 
-A resume-oriented distributed systems project: a key-value store with a Go backend and a React dashboard. The backend now runs as a small replicated cluster with append-only logs, follower write forwarding, majority acknowledgements, startup catch-up, and a Raft-inspired leader election layer.
+A resume-oriented distributed systems project: a key-value store with a Go backend and a React dashboard. The backend now runs as a small replicated cluster with append-only logs, follower write forwarding, majority acknowledgements, Raft-inspired leader election, peer health checks, and controlled fault simulation.
 
 ## Project Layout
 
@@ -16,8 +16,11 @@ A resume-oriented distributed systems project: a key-value store with a Go backe
 - Three-node Docker Compose cluster
 - Leader-based replication with majority acknowledgements
 - Follower write forwarding to the current elected leader
-- Follower catch-up on startup through missing log replay
+- Follower catch-up through missing log replay
 - Raft-inspired terms, roles, heartbeats, RequestVote, and leader failover
+- Peer health probing for stopped or unreachable nodes
+- Controlled replication/catch-up partition simulation
+- Rollback of uncommitted writes when majority replication fails
 - JSON HTTP API
 - Health endpoint
 - Cluster state endpoint with elected leader/member view
@@ -27,10 +30,10 @@ A resume-oriented distributed systems project: a key-value store with a Go backe
 ## Next Milestones
 
 1. Persist Raft `currentTerm` and `votedFor`.
-2. Add peer health probing so `/cluster` marks stopped nodes unhealthy.
-3. Track commit index separately from applied log index.
-4. Add network partition and delayed-message simulation.
-5. Expand the dashboard with failure controls and elected-leader visualization.
+2. Track commit index separately from applied log index.
+3. Add delayed-message simulation.
+4. Expand the dashboard with failure controls and elected-leader visualization.
+5. Add benchmark and chaos-demo scripts.
 
 ## Run Locally
 
@@ -141,6 +144,7 @@ Write flow:
 6. Followers apply replicated log entries in index order.
 
 Followers catch up on startup by requesting missing entries from the leader with `GET /internal/log?after=<index>`.
+Followers also run periodic catch-up, so a lagging node can repair itself after a simulated partition heals.
 
 ## Consensus Model
 
@@ -168,11 +172,63 @@ curl http://localhost:8082/raft
 
 One remaining node should become leader, and the other should report that leader in its Raft state.
 
+## Fault Tolerance Demo
+
+Stop a follower and observe health:
+
+```sh
+docker compose stop node-3
+curl http://localhost:8081/cluster
+```
+
+`node-3` should appear with `"healthy":false`. Start it again and health should recover:
+
+```sh
+docker compose start node-3
+curl http://localhost:8081/cluster
+```
+
+Simulate a leader-to-follower partition:
+
+```sh
+curl -X POST http://localhost:8080/faults/replication/node-3
+curl http://localhost:8080/faults
+```
+
+Write while `node-3` is partitioned:
+
+```sh
+curl -X PUT http://localhost:8080/kv/partitioned \
+  -H 'Content-Type: application/json' \
+  -d '{"value":"heals-later"}'
+```
+
+The leader can still commit with a majority:
+
+```sh
+curl http://localhost:8080/kv/partitioned
+curl http://localhost:8081/kv/partitioned
+curl http://localhost:8082/kv/partitioned
+```
+
+`node-1` and `node-2` should have the value. `node-3` should return `key not found`.
+
+Heal the partition:
+
+```sh
+curl -X DELETE http://localhost:8080/faults/replication/node-3
+```
+
+After periodic catch-up runs, `node-3` should repair itself without a restart:
+
+```sh
+curl http://localhost:8082/kv/partitioned
+curl http://localhost:8082/log
+```
+
 Current limitations:
 
 - Raft term/vote state is in memory and not persisted yet
-- follower catch-up runs once at startup
-- stopped followers miss writes until they restart and catch up
-- peer health is not actively probed yet
+- fault simulation is in-memory and resets when a node restarts
 - replicated entries are applied immediately after majority acknowledgement; there is not yet a separate commit index
-- no network partition simulation yet
+- simulated partitions cover replication and catch-up traffic, not arbitrary client traffic

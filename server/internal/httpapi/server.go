@@ -129,6 +129,11 @@ func (s *Server) put(w http.ResponseWriter, r *http.Request) {
 
 	acks := s.replicateToPeers(r, entry)
 	if acks < s.cluster.Majority() {
+		if err := s.rollbackEntry(entry); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to roll back uncommitted entry")
+			return
+		}
+
 		writeError(w, http.StatusServiceUnavailable, "failed to reach replication majority")
 		return
 	}
@@ -168,6 +173,11 @@ func (s *Server) delete(w http.ResponseWriter, r *http.Request) {
 	}
 	acks := s.replicateToPeers(r, entry)
 	if acks < s.cluster.Majority() {
+		if err := s.rollbackEntry(entry); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to roll back uncommitted entry")
+			return
+		}
+
 		writeError(w, http.StatusServiceUnavailable, "failed to reach replication majority")
 		return
 	}
@@ -245,6 +255,15 @@ func (s *Server) replicateToPeers(r *http.Request, entry oplog.Entry) int {
 	return acks
 }
 
+func (s *Server) rollbackEntry(entry oplog.Entry) error {
+	if err := s.log.TruncateFrom(entry.Index); err != nil {
+		return err
+	}
+
+	return s.store.Rebuild(s.log.Entries())
+
+}
+
 func keyFromPath(r *http.Request) string {
 	return strings.TrimPrefix(r.URL.Path, "/kv/")
 }
@@ -309,6 +328,12 @@ func (s *Server) forwardToLeader(r *http.Request, method, path string, payload a
 func (s *Server) internalLogEntries(w http.ResponseWriter, r *http.Request) {
 	if s.raft.Role() != raftstate.RoleLeader {
 		writeError(w, http.StatusForbidden, "only leader can serve log entries")
+		return
+	}
+
+	requestingNodeID := r.Header.Get("X-Node-ID")
+	if requestingNodeID != "" && s.faults.ShouldDropReplicationTo(requestingNodeID) {
+		writeError(w, http.StatusServiceUnavailable, "node is partitioned from leader")
 		return
 	}
 

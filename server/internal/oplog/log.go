@@ -174,3 +174,43 @@ func (l *Log) write(entry Entry) error {
 	}
 	return l.file.Sync()
 }
+
+func (l *Log) TruncateFrom(index uint64) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	keep := make([]Entry, 0, len(l.entries))
+	for _, entry := range l.entries {
+		if entry.Index < index {
+			keep = append(keep, entry)
+		}
+	}
+
+	l.entries = keep
+	l.nextIndex = index
+
+	return l.rewrite()
+}
+
+func (l *Log) rewrite() error {
+	if l.file == nil {
+		return nil
+	}
+
+	if err := l.file.Truncate(0); err != nil {
+		return err
+	}
+
+	if _, err := l.file.Seek(0, 0); err != nil {
+		return err
+	}
+
+	encoder := json.NewEncoder(l.file)
+	for _, entry := range l.entries {
+		if err := encoder.Encode(entry); err != nil {
+			return err
+		}
+	}
+
+	return l.file.Sync()
+}

@@ -58,7 +58,7 @@ func main() {
 			log.Fatalf("leader %q not found in cluster members", leaderID)
 		}
 
-		if err := replication.CatchUp(context.Background(), leader.Address, operationLog, kv); err != nil {
+		if err := replication.CatchUp(context.Background(), nodeID, leader.Address, operationLog, kv); err != nil {
 			log.Printf("Initial catch-up failed: %v", err)
 		} else {
 			log.Printf("Successfully caught from leader %s through log index %d", leader.ID, operationLog.LastIndex())
@@ -72,6 +72,9 @@ func main() {
 
 	election := raftstate.NewElectionRunner(raft, state.Peers(), state.Majority())
 	go election.Start(context.Background())
+
+	catchUpRunner := replication.NewCatchUpRunner(state, raft, operationLog, kv)
+	go catchUpRunner.Start(context.Background())
 
 	log.Printf("starting kvstore node=%s addr=%s", nodeID, addr)
 	if err := http.ListenAndServe(addr, handler.Routes()); err != nil {

@@ -15,7 +15,7 @@ type catchUpResponse struct {
 	Entries []oplog.Entry `json:"entries"`
 }
 
-func CatchUp(ctx context.Context, leaderAddress string, log *oplog.Log, kv *store.Memory) error {
+func CatchUp(ctx context.Context, localNodeID string, leaderAddress string, log *oplog.Log, kv *store.Memory) error {
 	if leaderAddress == "" {
 		return fmt.Errorf("leader address is required")
 	}
@@ -28,6 +28,8 @@ func CatchUp(ctx context.Context, leaderAddress string, log *oplog.Log, kv *stor
 	if err != nil {
 		return err
 	}
+
+	request.Header.Set("X-Node-ID", localNodeID)
 
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {

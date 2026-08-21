@@ -41,7 +41,7 @@ func TestCatchUpFetchesAndAppliesMissingEntries(t *testing.T) {
 		t.Fatalf("apply existing entry: %v", err)
 	}
 
-	if err := CatchUp(context.Background(), leader.URL, log, kv); err != nil {
+	if err := CatchUp(context.Background(), "node-2", leader.URL, log, kv); err != nil {
 		t.Fatalf("catch up: %v", err)
 	}
 

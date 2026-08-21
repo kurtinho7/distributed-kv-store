@@ -77,3 +77,23 @@ func (m *Memory) Apply(entry oplog.Entry) error {
 
 	return nil
 }
+
+func (m *Memory) Rebuild(entries []oplog.Entry) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	data := make(map[string]string)
+	for _, entry := range entries {
+		switch entry.Operation {
+		case oplog.OperationPut:
+			data[entry.Key] = entry.Value
+		case oplog.OperationDelete:
+			delete(data, entry.Key)
+		default:
+			return errors.New("unknown operation")
+		}
+	}
+
+	m.data = data
+	return nil
+}
