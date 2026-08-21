@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"sync"
 )
 
 type Role string
@@ -23,9 +24,11 @@ type Member struct {
 }
 
 type State struct {
+	mu 	 sync.RWMutex
 	nodeID   string
 	leaderID string
 	members  []Member
+	health map[string]bool
 }
 
 func NewState(nodeID string, leaderID string, members []Member) *State {
@@ -38,11 +41,22 @@ func NewState(nodeID string, leaderID string, members []Member) *State {
 			{ID: nodeID, Address: "localhost:8080"},
 		}
 	}
+
+	health := make(map[string]bool, len(members))
+	for _, member := range members {
+		health[member.ID] = true
+	}
+
 	return &State{
 		nodeID:   nodeID,
 		leaderID: leaderID,
 		members:  members,
+		health:   health,
 	}
+}
+
+func (s *State) NodeID() string {
+	return s.nodeID
 }
 
 func ParseMembers(config string) ([]Member, error) {
@@ -75,6 +89,9 @@ func ParseMembers(config string) ([]Member, error) {
 }
 
 func (s *State) Snapshot(logIndex uint64) []Member {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
 	now := time.Now().UTC()
 	members := make([]Member, 0, len(s.members))
 
@@ -85,7 +102,7 @@ func (s *State) Snapshot(logIndex uint64) []Member {
 			member.Role = RoleFollower
 		}
 
-		member.Healthy = true
+		member.Healthy = s.health[member.ID]
 		member.UpdatedAt = now
 
 		if member.ID == s.nodeID {
@@ -136,4 +153,19 @@ func (s *State) MemberByID(id string) (Member, bool) {
 		}
 	}
 	return Member{}, false
+}
+
+func (s *State) SetHealth(nodeID string, healthy bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.health[nodeID] = healthy
+}
+
+func (s *State) IsHealthy(nodeID string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	healthy, ok := s.health[nodeID]
+	return ok && healthy
 }

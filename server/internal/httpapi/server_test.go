@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"kvstore/internal/cluster"
+	"kvstore/internal/faults"
 	"kvstore/internal/oplog"
 	raftstate "kvstore/internal/raft"
 	"kvstore/internal/store"
@@ -112,7 +114,8 @@ func newTestServer() http.Handler {
 	raft := raftstate.NewState("node-test")
 	raft.BecomeCandidate()
 	raft.BecomeLeader()
-	return NewServer(kv, state, log, raft).Routes()
+	faultsState := faults.NewState()
+	return NewServer(kv, state, log, raft, faultsState).Routes()
 }
 
 func newFollowerTestServer() http.Handler {
@@ -124,7 +127,8 @@ func newFollowerTestServer() http.Handler {
 	state := cluster.NewState("node-2", "node-1", members)
 	log := oplog.New()
 	raft := raftstate.NewState("node-2")
-	return NewServer(kv, state, log, raft).Routes()
+	faultsState := faults.NewState()
+	return NewServer(kv, state, log, raft, faultsState).Routes()
 }
 
 func TestReplicateAppliesEntryOnFollower(t *testing.T) {
@@ -318,7 +322,8 @@ func TestClusterEndpointUsesRaftLeader(t *testing.T) {
 	raft := raftstate.NewState("node-1")
 	raft.BecomeFollower(2, "node-2")
 
-	handler := NewServer(kv, clusterState, log, raft).Routes()
+	faultsState := faults.NewState()
+	handler := NewServer(kv, clusterState, log, raft, faultsState).Routes()
 
 	request := httptest.NewRequest(http.MethodGet, "/cluster", nil)
 	response := httptest.NewRecorder()
@@ -341,5 +346,82 @@ func TestClusterEndpointUsesRaftLeader(t *testing.T) {
 
 	if body.Members[1].Role != cluster.RoleLeader {
 		t.Fatalf("expected node-2 leader, got %q", body.Members[1].Role)
+	}
+}
+
+func TestLeaderSkipsReplicationToFaultedPeer(t *testing.T) {
+	kv := store.NewMemory()
+	log := oplog.New()
+
+	faultState := faults.NewState()
+	faultState.DropReplicationTo("node-3")
+
+	healthyFollower := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer healthyFollower.Close()
+
+	faultedFollowerCalled := false
+	faultedFollower := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		faultedFollowerCalled = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer faultedFollower.Close()
+
+	members := []cluster.Member{
+		{ID: "node-1", Address: "http://localhost:8080"},
+		{ID: "node-2", Address: healthyFollower.URL},
+		{ID: "node-3", Address: faultedFollower.URL},
+	}
+	clusterState := cluster.NewState("node-1", "node-1", members)
+
+	raft := raftstate.NewState("node-1")
+	raft.BecomeCandidate()
+	raft.BecomeLeader()
+
+	handler := NewServer(kv, clusterState, log, raft, faultState).Routes()
+
+	request := httptest.NewRequest(http.MethodPut, "/kv/faulted", bytes.NewBufferString(`{"value":"dropped"}`))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected PUT status 200, got %d: %s", response.Code, response.Body.String())
+	}
+
+	if faultedFollowerCalled {
+		t.Fatal("expected faulted follower not to receive replication")
+	}
+}
+
+func TestFaultEndpointsDropAndHealReplication(t *testing.T) {
+	handler := newTestServer()
+
+	drop := httptest.NewRequest(http.MethodPost, "/faults/replication/node-3", nil)
+	dropResponse := httptest.NewRecorder()
+	handler.ServeHTTP(dropResponse, drop)
+
+	if dropResponse.Code != http.StatusOK {
+		t.Fatalf("expected drop status 200, got %d", dropResponse.Code)
+	}
+
+	list := httptest.NewRequest(http.MethodGet, "/faults", nil)
+	listResponse := httptest.NewRecorder()
+	handler.ServeHTTP(listResponse, list)
+
+	if listResponse.Code != http.StatusOK {
+		t.Fatalf("expected faults status 200, got %d", listResponse.Code)
+	}
+
+	if !strings.Contains(listResponse.Body.String(), "node-3") {
+		t.Fatalf("expected node-3 fault in response, got %s", listResponse.Body.String())
+	}
+
+	heal := httptest.NewRequest(http.MethodDelete, "/faults/replication/node-3", nil)
+	healResponse := httptest.NewRecorder()
+	handler.ServeHTTP(healResponse, heal)
+
+	if healResponse.Code != http.StatusOK {
+		t.Fatalf("expected heal status 200, got %d", healResponse.Code)
 	}
 }

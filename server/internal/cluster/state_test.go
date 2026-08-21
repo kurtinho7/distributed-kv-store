@@ -117,3 +117,32 @@ func TestMemberByID(t *testing.T) {
 		t.Fatal("expected missing member lookup to fail")
 	}
 }
+
+func TestSnapshotUsesStoredHealth(t *testing.T) {
+	state := NewState("node-2", "node-1", []Member{
+		{ID: "node-1", Address: "http://localhost:8080"},
+		{ID: "node-2", Address: "http://localhost:8081"},
+	})
+
+	state.SetHealth("node-1", false)
+
+	members := state.Snapshot(3)
+
+	if members[0].Healthy {
+		t.Fatal("expected node-1 to be unhealthy")
+	}
+
+	if !members[1].Healthy {
+		t.Fatal("expected node-2 to remain healthy")
+	}
+}
+
+func TestIsHealthyReturnsFalseForUnknownNode(t *testing.T) {
+	state := NewState("node-1", "node-1", []Member{
+		{ID: "node-1", Address: "http://localhost:8080"},
+	})
+
+	if state.IsHealthy("missing") {
+		t.Fatal("expected unknown node to be unhealthy")
+	}
+}

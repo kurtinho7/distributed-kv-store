@@ -15,11 +15,13 @@ import (
 	"kvstore/internal/oplog"
 	"kvstore/internal/store"
 	raftstate "kvstore/internal/raft"
+	"kvstore/internal/faults"
 )
 
 type Server struct {
 	store   *store.Memory
 	cluster *cluster.State
+	faults  *faults.State
 	log     *oplog.Log
 	raft    *raftstate.State
 }
@@ -37,8 +39,8 @@ type errorResponse struct {
 	Error string `json:"error"`
 }
 
-func NewServer(store *store.Memory, cluster *cluster.State, log *oplog.Log, raft *raftstate.State) *Server {
-	return &Server{store: store, cluster: cluster, log: log, raft: raft}
+func NewServer(store *store.Memory, cluster *cluster.State, log *oplog.Log, raft *raftstate.State, faults *faults.State) *Server {
+	return &Server{store: store, cluster: cluster, log: log, raft: raft, faults: faults}
 }
 
 func (s *Server) Routes() http.Handler {
@@ -55,6 +57,9 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /kv/", s.get)
 	mux.HandleFunc("PUT /kv/", s.put)
 	mux.HandleFunc("DELETE /kv/", s.delete)
+	mux.HandleFunc("GET /faults", s.faultState)
+	mux.HandleFunc("POST /faults/replication/", s.dropReplication)
+	mux.HandleFunc("DELETE /faults/replication/", s.healReplication)
 	return withCORS(mux)
 }
 
@@ -205,6 +210,10 @@ func (s *Server) replicateToPeers(r *http.Request, entry oplog.Entry) int {
 	acks := 1
 
 	for _, peer := range s.cluster.Peers() {
+		if s.faults.ShouldDropReplicationTo(peer.ID) {
+			continue
+		}
+
 		body, err := json.Marshal(entry)
 		if err != nil {
 			continue
@@ -341,4 +350,36 @@ func (s *Server) appendEntries(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) raftState(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, s.raft.Snapshot())
+}
+
+func (s *Server) faultState(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"droppedReplicationTo": s.faults.DroppedReplicationTargets(),
+	})
+}
+
+func (s *Server) dropReplication(w http.ResponseWriter, r *http.Request) {
+	nodeID := strings.TrimPrefix(r.URL.Path, "/faults/replication/")
+	if nodeID == "" {
+		writeError(w, http.StatusBadRequest, "node ID is required")
+		return
+	}
+
+	s.faults.DropReplicationTo(nodeID)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"droppedReplicationTo": s.faults.DroppedReplicationTargets(),
+	})
+}
+
+func (s *Server) healReplication(w http.ResponseWriter, r *http.Request) {
+	nodeID := strings.TrimPrefix(r.URL.Path, "/faults/replication/")
+	if nodeID == "" {
+		writeError(w, http.StatusBadRequest, "node ID is required")
+		return
+	}
+
+	s.faults.HealReplicationTo(nodeID)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"droppedReplicationTo": s.faults.DroppedReplicationTargets(),
+	})
 }

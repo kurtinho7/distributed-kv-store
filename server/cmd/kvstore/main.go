@@ -12,6 +12,7 @@ import (
 	"kvstore/internal/replication"
 	"kvstore/internal/store"
 	raftstate "kvstore/internal/raft"
+	"kvstore/internal/faults"
 )
 
 func main() {
@@ -42,6 +43,8 @@ func main() {
 		log.Fatalf("parse cluster config: %v", err)
 	}
 	state := cluster.NewState(nodeID, leaderID, members)
+	healthChecker := cluster.NewHealthChecker(state)
+	go healthChecker.Start(context.Background())
 	raft := raftstate.NewState(nodeID)
 
 	if nodeID == leaderID {
@@ -61,7 +64,8 @@ func main() {
 			log.Printf("Successfully caught from leader %s through log index %d", leader.ID, operationLog.LastIndex())
 		}
 	}
-	handler := httpapi.NewServer(kv, state, operationLog, raft)
+	faultsState := faults.NewState()
+	handler := httpapi.NewServer(kv, state, operationLog, raft, faultsState)
 
 	sender := raftstate.NewHeartbeatSender(raft, state.Peers())
 	go sender.Start(context.Background())
