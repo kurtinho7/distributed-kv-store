@@ -15,6 +15,10 @@ NODES=(
   "http://localhost:8084"
 )
 
+if [[ -n "${KV_NODE_URLS:-}" ]]; then
+  IFS=',' read -r -a NODES <<<"$KV_NODE_URLS"
+fi
+
 usage() {
   cat <<EOF
 Usage: ./scripts/hammer.sh [options]

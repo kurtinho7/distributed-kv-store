@@ -1,0 +1,105 @@
+x-node-env: &node-env
+  KV_LEADER_ID: node-1
+  KV_ADDR: :8080
+  KV_CLUSTER: node-1=http://node-1:8080,node-2=http://node-2:8080,node-3=http://node-3:8080,node-4=http://node-4:8080,node-5=http://node-5:8080
+
+services:
+  node-1:
+    build:
+      context: ./server
+    environment:
+      <<: *node-env
+      KV_NODE_ID: node-1
+      KV_LOG_PATH: /data/kv.log
+    volumes:
+      - node-1-demo-data:/data
+
+  node-2:
+    build:
+      context: ./server
+    environment:
+      <<: *node-env
+      KV_NODE_ID: node-2
+      KV_LOG_PATH: /data/kv.log
+    volumes:
+      - node-2-demo-data:/data
+
+  node-3:
+    build:
+      context: ./server
+    environment:
+      <<: *node-env
+      KV_NODE_ID: node-3
+      KV_LOG_PATH: /data/kv.log
+    volumes:
+      - node-3-demo-data:/data
+
+  node-4:
+    build:
+      context: ./server
+    environment:
+      <<: *node-env
+      KV_NODE_ID: node-4
+      KV_LOG_PATH: /data/kv.log
+    volumes:
+      - node-4-demo-data:/data
+
+  node-5:
+    build:
+      context: ./server
+    environment:
+      <<: *node-env
+      KV_NODE_ID: node-5
+      KV_LOG_PATH: /data/kv.log
+    volumes:
+      - node-5-demo-data:/data
+
+  democtl:
+    build:
+      context: ./server
+      target: democtl
+    environment:
+      DEMOCTL_ADDR: :9090
+      DEMOCTL_ROOT: /workspace
+      DEMOCTL_TOKEN: ${DEMOCTL_TOKEN:?set DEMOCTL_TOKEN before starting the hosted demo}
+      COMPOSE_FILE: docker-compose.demo.yml
+      COMPOSE_PROJECT_NAME: kvstore-demo
+      KV_COMPOSE_SERVICES: node-1 node-2 node-3 node-4 node-5
+      KV_NODE_URLS: http://node-1:8080,http://node-2:8080,http://node-3:8080,http://node-4:8080,http://node-5:8080
+    volumes:
+      - .:/workspace
+      - /var/run/docker.sock:/var/run/docker.sock
+    working_dir: /workspace
+    depends_on:
+      - node-1
+      - node-2
+      - node-3
+      - node-4
+      - node-5
+
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./web/dist:/srv/web:ro
+      - caddy-demo-data:/data
+      - caddy-demo-config:/config
+    depends_on:
+      - democtl
+      - node-1
+      - node-2
+      - node-3
+      - node-4
+      - node-5
+
+volumes:
+  node-1-demo-data:
+  node-2-demo-data:
+  node-3-demo-data:
+  node-4-demo-data:
+  node-5-demo-data:
+  caddy-demo-data:
+  caddy-demo-config:

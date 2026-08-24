@@ -56,6 +56,7 @@ type hammerRequest struct {
 func main() {
 	addr := env("DEMOCTL_ADDR", ":9090")
 	root := env("DEMOCTL_ROOT", findRoot())
+	token := os.Getenv("DEMOCTL_TOKEN")
 	c := &controller{
 		root: root,
 		chaosJob: jobStatus{
@@ -87,7 +88,7 @@ func main() {
 	mux.HandleFunc("POST /demo/nodes/", c.nodeAction)
 
 	log.Printf("starting demo controller addr=%s root=%s", addr, root)
-	if err := http.ListenAndServe(addr, withCORS(mux)); err != nil {
+	if err := http.ListenAndServe(addr, withCORS(requireToken(token, mux))); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -357,11 +358,31 @@ func withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func requireToken(token string, next http.Handler) http.Handler {
+	if token == "" {
+		return next
+	}
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" || r.Method == http.MethodOptions {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		if r.Header.Get("Authorization") != "Bearer "+token {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+
 		next.ServeHTTP(w, r)
 	})
 }

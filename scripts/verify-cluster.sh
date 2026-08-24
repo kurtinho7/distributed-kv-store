@@ -9,6 +9,14 @@ NODES=(
   "node-5=http://localhost:8084"
 )
 
+if [[ -n "${KV_NODE_URLS:-}" ]]; then
+  IFS=',' read -r -a node_urls <<<"$KV_NODE_URLS"
+  NODES=()
+  for index in "${!node_urls[@]}"; do
+    NODES+=("node-$((index + 1))=${node_urls[$index]}")
+  done
+fi
+
 TIMEOUT_SECONDS=20
 
 usage() {

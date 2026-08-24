@@ -11,11 +11,21 @@ NODES=(
   "node-5=http://localhost:8084"
 )
 
+if [[ -n "${KV_NODE_URLS:-}" ]]; then
+  IFS=',' read -r -a node_urls <<<"$KV_NODE_URLS"
+  NODES=()
+  for index in "${!node_urls[@]}"; do
+    NODES+=("node-$((index + 1))=${node_urls[$index]}")
+  done
+fi
+
 DURATION_SECONDS=30
 WRITERS=10
 KEYSPACE=100
 FAIL_AFTER_SECONDS=5
 KILLED_LEADER=""
+
+read -r -a COMPOSE_SERVICES <<<"${KV_COMPOSE_SERVICES:-node-1 node-2 node-3 node-4 node-5}"
 
 usage() {
   cat <<EOF
@@ -146,7 +156,7 @@ wait_for_leader() {
 cd "$ROOT_DIR"
 
 log "Ensuring five-node cluster is running"
-docker compose up -d
+docker compose up -d "${COMPOSE_SERVICES[@]}"
 
 log "Waiting for nodes"
 for node in "${NODES[@]}"; do

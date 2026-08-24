@@ -3,15 +3,15 @@ import { createRoot } from 'react-dom/client';
 import { Activity, CheckCircle2, Database, ListOrdered, Play, Power, RefreshCcw, RotateCcw, ShieldAlert, ShieldCheck, Terminal, Trash2 } from 'lucide-react';
 import './styles.css';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8080';
-const DEMOCTL_URL = import.meta.env.VITE_DEMOCTL_URL ?? 'http://localhost:9090';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '/api/node-1';
+const DEMOCTL_URL = import.meta.env.VITE_DEMOCTL_URL ?? '';
 
 const NODES = [
-  { id: 'node-1', url: 'http://localhost:8080' },
-  { id: 'node-2', url: 'http://localhost:8081' },
-  { id: 'node-3', url: 'http://localhost:8082' },
-  { id: 'node-4', url: 'http://localhost:8083' },
-  { id: 'node-5', url: 'http://localhost:8084' },
+  { id: 'node-1', url: import.meta.env.VITE_NODE_1_URL ?? '/api/node-1' },
+  { id: 'node-2', url: import.meta.env.VITE_NODE_2_URL ?? '/api/node-2' },
+  { id: 'node-3', url: import.meta.env.VITE_NODE_3_URL ?? '/api/node-3' },
+  { id: 'node-4', url: import.meta.env.VITE_NODE_4_URL ?? '/api/node-4' },
+  { id: 'node-5', url: import.meta.env.VITE_NODE_5_URL ?? '/api/node-5' },
 ];
 
 type Entry = {
@@ -211,6 +211,31 @@ function App() {
   const [hammerWriters, setHammerWriters] = React.useState(10);
   const [hammerKeyspace, setHammerKeyspace] = React.useState(100);
   const [hammerReadAfterWrite, setHammerReadAfterWrite] = React.useState(false);
+  const [demoToken, setDemoToken] = React.useState(() => window.localStorage.getItem('democtlToken') ?? '');
+
+  const demoFetch = React.useCallback(
+    (path: string, init: RequestInit = {}) => {
+      const headers = new Headers(init.headers);
+      if (demoToken) {
+        headers.set('Authorization', `Bearer ${demoToken}`);
+      }
+
+      return fetch(`${DEMOCTL_URL}${path}`, {
+        ...init,
+        headers,
+      });
+    },
+    [demoToken],
+  );
+
+  React.useEffect(() => {
+    if (demoToken) {
+      window.localStorage.setItem('democtlToken', demoToken);
+      return;
+    }
+
+    window.localStorage.removeItem('democtlToken');
+  }, [demoToken]);
 
   const replicatedLogRows = React.useMemo(() => {
     const entriesByIndex = new Map<number, LogEntry>();
@@ -299,28 +324,28 @@ function App() {
   }, [refresh]);
 
   const refreshChaosStatus = React.useCallback(async () => {
-    const response = await fetch(`${DEMOCTL_URL}/demo/chaos/status`);
+    const response = await demoFetch('/demo/chaos/status');
     const body = await response.json();
     setChaosStatus(body);
-  }, []);
+  }, [demoFetch]);
 
   const refreshHammerStatus = React.useCallback(async () => {
-    const response = await fetch(`${DEMOCTL_URL}/demo/hammer/status`);
+    const response = await demoFetch('/demo/hammer/status');
     const body = await response.json();
     setHammerStatus(body);
-  }, []);
+  }, [demoFetch]);
 
   const refreshVerifyStatus = React.useCallback(async () => {
-    const response = await fetch(`${DEMOCTL_URL}/demo/verify/status`);
+    const response = await demoFetch('/demo/verify/status');
     const body = await response.json();
     setVerifyStatus(body);
-  }, []);
+  }, [demoFetch]);
 
   const refreshScenarioStatus = React.useCallback(async () => {
-    const response = await fetch(`${DEMOCTL_URL}/demo/scenarios/leader-failover/status`);
+    const response = await demoFetch('/demo/scenarios/leader-failover/status');
     const body = await response.json();
     setScenarioStatus(body);
-  }, []);
+  }, [demoFetch]);
 
   React.useEffect(() => {
     refreshChaosStatus().catch(() => {
@@ -477,7 +502,7 @@ function App() {
   }
 
   async function startChaosDemo() {
-    const response = await fetch(`${DEMOCTL_URL}/demo/chaos/start`, {
+    const response = await demoFetch('/demo/chaos/start', {
       method: 'POST',
     });
     const body = await response.json();
@@ -486,7 +511,7 @@ function App() {
   }
 
   async function startHammer() {
-    const response = await fetch(`${DEMOCTL_URL}/demo/hammer/start`, {
+    const response = await demoFetch('/demo/hammer/start', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -502,7 +527,7 @@ function App() {
   }
 
   async function startVerify() {
-    const response = await fetch(`${DEMOCTL_URL}/demo/verify/start`, {
+    const response = await demoFetch('/demo/verify/start', {
       method: 'POST',
     });
     const body = await response.json();
@@ -511,7 +536,7 @@ function App() {
   }
 
   async function startLeaderFailover() {
-    const response = await fetch(`${DEMOCTL_URL}/demo/scenarios/leader-failover/start`, {
+    const response = await demoFetch('/demo/scenarios/leader-failover/start', {
       method: 'POST',
     });
     const body = await response.json();
@@ -520,7 +545,7 @@ function App() {
   }
 
   async function startFollowerCatchUp() {
-    const response = await fetch(`${DEMOCTL_URL}/demo/scenarios/follower-catchup/start`, {
+    const response = await demoFetch('/demo/scenarios/follower-catchup/start', {
       method: 'POST',
     });
     const body = await response.json();
@@ -529,7 +554,7 @@ function App() {
   }
 
   async function runNodeAction(nodeID: string, action: 'start' | 'stop' | 'restart') {
-    const response = await fetch(`${DEMOCTL_URL}/demo/nodes/${nodeID}/${action}`, {
+    const response = await demoFetch(`/demo/nodes/${nodeID}/${action}`, {
       method: 'POST',
     });
     const body = await response.json();
@@ -547,6 +572,16 @@ function App() {
           <h1>Distributed KV Store</h1>
           <p>Active API: {activeApiUrl}</p>
         </div>
+        <label className="tokenField">
+          Demo token
+          <input
+            autoComplete="off"
+            placeholder="Optional locally; required on hosted demo"
+            type="password"
+            value={demoToken}
+            onChange={(event) => setDemoToken(event.target.value)}
+          />
+        </label>
         <button className="iconButton" onClick={refresh} title="Refresh cluster state">
           <RefreshCcw size={18} />
         </button>

@@ -1,0 +1,31 @@
+:80 {
+	handle_path /api/node-1/* {
+		reverse_proxy node-1:8080
+	}
+
+	handle_path /api/node-2/* {
+		reverse_proxy node-2:8080
+	}
+
+	handle_path /api/node-3/* {
+		reverse_proxy node-3:8080
+	}
+
+	handle_path /api/node-4/* {
+		reverse_proxy node-4:8080
+	}
+
+	handle_path /api/node-5/* {
+		reverse_proxy node-5:8080
+	}
+
+	handle /demo/* {
+		reverse_proxy democtl:9090
+	}
+
+	handle {
+		root * /srv/web
+		try_files {path} /index.html
+		file_server
+	}
+}

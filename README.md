@@ -52,8 +52,20 @@ npm install
 npm run dev
 ```
 
-The web app expects the API at `http://localhost:8080` by default.
-The chaos demo panel expects the demo controller at `http://localhost:9090` by default. Override with `VITE_DEMOCTL_URL` if needed.
+The production/demo build uses same-origin paths such as `/api/node-1` and `/demo`.
+When running the Vite dev server directly, point it at the local containers:
+
+```sh
+cd web
+VITE_DEMOCTL_URL=http://localhost:9090 \
+VITE_NODE_1_URL=http://localhost:8080 \
+VITE_NODE_2_URL=http://localhost:8081 \
+VITE_NODE_3_URL=http://localhost:8082 \
+VITE_NODE_4_URL=http://localhost:8083 \
+VITE_NODE_5_URL=http://localhost:8084 \
+VITE_API_BASE_URL=http://localhost:8080 \
+npm run dev
+```
 
 Demo controller:
 
@@ -62,7 +74,12 @@ cd server
 go run ./cmd/democtl
 ```
 
-The demo controller listens on `http://localhost:9090` and can run local scripts such as the chaos demo. Run it outside Docker because the chaos demo restarts the Compose cluster.
+The demo controller listens on `http://localhost:9090` and can run local scripts such as the chaos demo.
+Set `DEMOCTL_TOKEN` to require a bearer token for demo controller routes:
+
+```sh
+DEMOCTL_TOKEN=dev-token go run ./cmd/democtl
+```
 
 Docker Compose:
 
@@ -217,6 +234,47 @@ Verify cluster convergence and log consistency:
 
 ```sh
 ./scripts/verify-cluster.sh
+```
+
+## Hosted Demo Deployment
+
+The hosted demo runs the dashboard, a five-node cluster, `democtl`, and Caddy on one Docker-enabled VM. The browser only talks to the public origin:
+
+- `/api/node-1/*` through `/api/node-5/*` proxy to the private KV containers
+- `/demo/*` proxies to `democtl`
+- demo controls require the bearer token from `DEMOCTL_TOKEN`
+
+On the VM:
+
+```sh
+git clone <repo-url>
+cd KV\ Store
+export DEMOCTL_TOKEN="$(openssl rand -hex 24)"
+./scripts/deploy-vm.sh
+```
+
+Open `http://<vm-ip>/`, paste the token into the dashboard's demo token field, then use the scenario, hammer, verify, and node controls from the UI.
+
+For a real domain, point DNS at the VM and update `Caddyfile` from `:80` to your hostname:
+
+```caddyfile
+demo.example.com {
+	# keep the existing handlers here
+}
+```
+
+Then redeploy:
+
+```sh
+./scripts/deploy-vm.sh
+```
+
+The demo stack is managed with:
+
+```sh
+docker compose -p kvstore-demo -f docker-compose.demo.yml ps
+docker compose -p kvstore-demo -f docker-compose.demo.yml logs -f
+docker compose -p kvstore-demo -f docker-compose.demo.yml down
 ```
 
 Run traffic and then verify correctness:

@@ -43,6 +43,16 @@ h1 {
   margin-top: 6px;
 }
 
+.tokenField {
+  color: #cbd8d2;
+  margin: 0 14px 0 auto;
+  min-width: min(320px, 36vw);
+}
+
+.tokenField input {
+  background: #f7f2df;
+}
+
 .layout {
   display: grid;
   gap: 18px;
@@ -220,7 +230,13 @@ th {
 @media (max-width: 760px) {
   .topbar {
     align-items: flex-start;
+    flex-wrap: wrap;
     gap: 18px;
+  }
+
+  .tokenField {
+    margin: 0;
+    min-width: 100%;
   }
 
   .layout {

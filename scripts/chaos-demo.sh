@@ -8,11 +8,22 @@ NODE_2="http://localhost:8081"
 NODE_3="http://localhost:8082"
 NODE_4="http://localhost:8083"
 NODE_5="http://localhost:8084"
+
+if [[ -n "${KV_NODE_URLS:-}" ]]; then
+  IFS=',' read -r -a node_urls <<<"$KV_NODE_URLS"
+  NODE_1="${node_urls[0]}"
+  NODE_2="${node_urls[1]}"
+  NODE_3="${node_urls[2]}"
+  NODE_4="${node_urls[3]}"
+  NODE_5="${node_urls[4]}"
+fi
+
 PARTITIONED_NODE="node-5"
 PARTITIONED_URL="$NODE_5"
 DURATION_SECONDS=15
 WRITERS=8
 KEYSPACE=50
+read -r -a COMPOSE_SERVICES <<<"${KV_COMPOSE_SERVICES:-node-1 node-2 node-3 node-4 node-5}"
 
 usage() {
   cat <<EOF
@@ -110,8 +121,9 @@ wait_for_convergence() {
 cd "$ROOT_DIR"
 
 log "Starting a clean five-node cluster"
-docker compose down -v --remove-orphans
-docker compose up --build -d
+docker compose stop "${COMPOSE_SERVICES[@]}" >/dev/null 2>&1 || true
+docker compose rm -f -v "${COMPOSE_SERVICES[@]}" >/dev/null 2>&1 || true
+docker compose up --build -d "${COMPOSE_SERVICES[@]}"
 
 log "Waiting for nodes"
 wait_for_node "$NODE_1" "node-1"
