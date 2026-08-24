@@ -145,8 +145,19 @@ find_leader() {
     if printf "%s" "$body" | grep -q '"role":"leader"'; then
       LEADER_ID="$id"
       LEADER_URL="$url"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+wait_for_leader() {
+  for _ in $(seq 1 30); do
+    if find_leader; then
       return
     fi
+    sleep 1
   done
 
   fail "could not find a leader"
@@ -205,8 +216,8 @@ for node in "${NODES[@]}"; do
   wait_for_node "$node"
 done
 
-log "Finding current leader"
-find_leader
+log "Waiting for current leader"
+wait_for_leader
 printf "current leader: %s\n" "$LEADER_ID"
 
 choose_partitioned_follower
