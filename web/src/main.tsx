@@ -1,6 +1,6 @@
 import React from 'react';
 import { createRoot } from 'react-dom/client';
-import { Activity, Database, ListOrdered, Play, Power, RefreshCcw, RotateCcw, ShieldAlert, ShieldCheck, Terminal, Trash2 } from 'lucide-react';
+import { Activity, CheckCircle2, Database, ListOrdered, Play, Power, RefreshCcw, RotateCcw, ShieldAlert, ShieldCheck, Terminal, Trash2 } from 'lucide-react';
 import './styles.css';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8080';
@@ -68,6 +68,49 @@ type DemoJobStatus = {
   endedAt?: string;
 };
 
+type VerifyLogIndex = {
+  nodeId: string;
+  index: number;
+};
+
+type VerifySummary = {
+  title: string;
+  reachableNodes?: number;
+  leaders?: number;
+  logIndexes: VerifyLogIndex[];
+  logsMatch?: boolean;
+};
+
+function parseVerifySummary(status: DemoJobStatus): VerifySummary {
+  const output = status.output;
+  const reachableMatch = output.match(/Reachable nodes:\s+(\d+)/);
+  const leadersMatch = output.match(/(?:Leaders|Leader count):\s+(\d+)/);
+  const logIndexes = Array.from(output.matchAll(/(node-\d+)=(\d+)/g)).map((match) => ({
+    nodeId: match[1],
+    index: Number(match[2]),
+  }));
+
+  const uniqueIndexes = new Set(logIndexes.map((entry) => entry.index));
+  const logsMatch = logIndexes.length > 0 ? uniqueIndexes.size === 1 : undefined;
+
+  let title = 'Not run';
+  if (status.state === 'running') {
+    title = 'Checking';
+  } else if (status.state === 'passed' && output.includes('Cluster verified')) {
+    title = 'Verified';
+  } else if (status.state === 'failed') {
+    title = 'Needs attention';
+  }
+
+  return {
+    title,
+    reachableNodes: reachableMatch ? Number(reachableMatch[1]) : undefined,
+    leaders: leadersMatch ? Number(leadersMatch[1]) : undefined,
+    logIndexes,
+    logsMatch,
+  };
+}
+
 function App() {
   const [keyName, setKeyName] = React.useState('project');
   const [value, setValue] = React.useState('distributed-kv');
@@ -83,6 +126,14 @@ function App() {
     output: '',
   });
   const [hammerStatus, setHammerStatus] = React.useState<DemoJobStatus>({
+    state: 'idle',
+    output: '',
+  });
+  const [verifyStatus, setVerifyStatus] = React.useState<DemoJobStatus>({
+    state: 'idle',
+    output: '',
+  });
+  const [scenarioStatus, setScenarioStatus] = React.useState<DemoJobStatus>({
     state: 'idle',
     output: '',
   });
@@ -108,6 +159,8 @@ function App() {
   const currentLeaderID = React.useMemo(() => {
     return nodeSnapshots.find((node) => node.raft?.role === 'leader')?.id ?? '';
   }, [nodeSnapshots]);
+
+  const verifySummary = React.useMemo(() => parseVerifySummary(verifyStatus), [verifyStatus]);
 
   const refresh = React.useCallback(async () => {
     const snapshots = await Promise.all(
@@ -186,6 +239,18 @@ function App() {
     setHammerStatus(body);
   }, []);
 
+  const refreshVerifyStatus = React.useCallback(async () => {
+    const response = await fetch(`${DEMOCTL_URL}/demo/verify/status`);
+    const body = await response.json();
+    setVerifyStatus(body);
+  }, []);
+
+  const refreshScenarioStatus = React.useCallback(async () => {
+    const response = await fetch(`${DEMOCTL_URL}/demo/scenarios/leader-failover/status`);
+    const body = await response.json();
+    setScenarioStatus(body);
+  }, []);
+
   React.useEffect(() => {
     refreshChaosStatus().catch(() => {
       setChaosStatus({
@@ -199,7 +264,19 @@ function App() {
         output: 'Demo controller is not reachable. Start it with: go run ./cmd/democtl',
       });
     });
-  }, [refreshChaosStatus, refreshHammerStatus]);
+    refreshVerifyStatus().catch(() => {
+      setVerifyStatus({
+        state: 'idle',
+        output: 'Demo controller is not reachable. Start it with: go run ./cmd/democtl',
+      });
+    });
+    refreshScenarioStatus().catch(() => {
+      setScenarioStatus({
+        state: 'idle',
+        output: 'Demo controller is not reachable. Start it with: go run ./cmd/democtl',
+      });
+    });
+  }, [refreshChaosStatus, refreshHammerStatus, refreshScenarioStatus, refreshVerifyStatus]);
 
   React.useEffect(() => {
     if (chaosStatus.state !== 'running') {
@@ -238,6 +315,44 @@ function App() {
 
     return () => window.clearInterval(interval);
   }, [hammerStatus.state, refresh, refreshHammerStatus]);
+
+  React.useEffect(() => {
+    if (verifyStatus.state !== 'running') {
+      return;
+    }
+
+    const interval = window.setInterval(() => {
+      refreshVerifyStatus()
+        .then(() => refresh())
+        .catch(() => {
+          setVerifyStatus((current) => ({
+            ...current,
+            output: `${current.output}\nDemo controller became unreachable.`,
+          }));
+        });
+    }, 1500);
+
+    return () => window.clearInterval(interval);
+  }, [verifyStatus.state, refresh, refreshVerifyStatus]);
+
+  React.useEffect(() => {
+    if (scenarioStatus.state !== 'running') {
+      return;
+    }
+
+    const interval = window.setInterval(() => {
+      refreshScenarioStatus()
+        .then(() => refresh())
+        .catch(() => {
+          setScenarioStatus((current) => ({
+            ...current,
+            output: `${current.output}\nDemo controller became unreachable.`,
+          }));
+        });
+    }, 1500);
+
+    return () => window.clearInterval(interval);
+  }, [scenarioStatus.state, refresh, refreshScenarioStatus]);
 
   async function putValue() {
     const response = await fetch(`${activeApiUrl}/kv/${encodeURIComponent(keyName)}`, {
@@ -313,6 +428,24 @@ function App() {
     const body = await response.json();
     setHammerStatus(body);
     setResult(response.ok ? 'Traffic hammer started.' : 'Traffic hammer is already running.');
+  }
+
+  async function startVerify() {
+    const response = await fetch(`${DEMOCTL_URL}/demo/verify/start`, {
+      method: 'POST',
+    });
+    const body = await response.json();
+    setVerifyStatus(body);
+    setResult(response.ok ? 'Cluster verification started.' : 'Cluster verification is already running.');
+  }
+
+  async function startLeaderFailover() {
+    const response = await fetch(`${DEMOCTL_URL}/demo/scenarios/leader-failover/start`, {
+      method: 'POST',
+    });
+    const body = await response.json();
+    setScenarioStatus(body);
+    setResult(response.ok ? 'Leader failover scenario started.' : 'Leader failover scenario is already running.');
   }
 
   async function runNodeAction(nodeID: string, action: 'start' | 'stop' | 'restart') {
@@ -547,6 +680,78 @@ function App() {
           </div>
           <pre className="jobOutput">
             {hammerStatus.output || 'Start the demo controller, then hammer the cluster from here.'}
+          </pre>
+        </div>
+
+        <div className="panel entries">
+          <div className="panelTitle">
+            <CheckCircle2 size={18} />
+            <h2>Cluster Verify</h2>
+          </div>
+          <div className="chaosHeader">
+            <span className={`jobBadge ${verifyStatus.state}`}>{verifyStatus.state}</span>
+            <button disabled={verifyStatus.state === 'running'} onClick={startVerify}>
+              <CheckCircle2 size={16} />
+              Verify Cluster
+            </button>
+            <button className="secondary" onClick={refreshVerifyStatus}>
+              <RefreshCcw size={16} />
+              Status
+            </button>
+          </div>
+          <div className={`verifySummary ${verifyStatus.state}`}>
+            <div className="verifyMetric">
+              <span>Result</span>
+              <strong>{verifySummary.title}</strong>
+            </div>
+            <div className="verifyMetric">
+              <span>Reachable</span>
+              <strong>{verifySummary.reachableNodes ?? '-'}</strong>
+            </div>
+            <div className="verifyMetric">
+              <span>Leaders</span>
+              <strong>{verifySummary.leaders ?? '-'}</strong>
+            </div>
+            <div className="verifyMetric">
+              <span>Logs</span>
+              <strong>
+                {verifySummary.logsMatch === undefined ? '-' : verifySummary.logsMatch ? 'match' : 'diverge'}
+              </strong>
+            </div>
+          </div>
+          {verifySummary.logIndexes.length > 0 && (
+            <div className="verifyIndexes">
+              {verifySummary.logIndexes.map((entry) => (
+                <span key={entry.nodeId}>
+                  {entry.nodeId}={entry.index}
+                </span>
+              ))}
+            </div>
+          )}
+          <pre className="jobOutput">
+            {verifyStatus.output || 'Run verification after hammering or healing partitions.'}
+          </pre>
+        </div>
+
+        <div className="panel entries">
+          <div className="panelTitle">
+            <RotateCcw size={18} />
+            <h2>Scenario Runner</h2>
+          </div>
+          <div className="chaosHeader">
+            <span className={`jobBadge ${scenarioStatus.state}`}>{scenarioStatus.state}</span>
+            <button disabled={scenarioStatus.state === 'running'} onClick={startLeaderFailover}>
+              <Play size={16} />
+              Leader Failover Under Load
+            </button>
+            <button className="secondary" onClick={refreshScenarioStatus}>
+              <RefreshCcw size={16} />
+              Status
+            </button>
+          </div>
+          <pre className="jobOutput">
+            {scenarioStatus.output ||
+              'Run a scripted failover: hammer traffic, stop the leader, elect a new leader, restart the old leader, then verify convergence.'}
           </pre>
         </div>
 

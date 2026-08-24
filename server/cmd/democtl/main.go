@@ -32,10 +32,12 @@ type jobStatus struct {
 }
 
 type controller struct {
-	mu        sync.Mutex
-	root      string
-	chaosJob  jobStatus
-	hammerJob jobStatus
+	mu          sync.Mutex
+	root        string
+	chaosJob    jobStatus
+	hammerJob   jobStatus
+	verifyJob   jobStatus
+	scenarioJob jobStatus
 }
 
 type commandResponse struct {
@@ -62,6 +64,12 @@ func main() {
 		hammerJob: jobStatus{
 			State: jobIdle,
 		},
+		verifyJob: jobStatus{
+			State: jobIdle,
+		},
+		scenarioJob: jobStatus{
+			State: jobIdle,
+		},
 	}
 
 	mux := http.NewServeMux()
@@ -70,6 +78,10 @@ func main() {
 	mux.HandleFunc("GET /demo/chaos/status", c.chaosStatus)
 	mux.HandleFunc("POST /demo/hammer/start", c.startHammer)
 	mux.HandleFunc("GET /demo/hammer/status", c.hammerStatus)
+	mux.HandleFunc("POST /demo/verify/start", c.startVerify)
+	mux.HandleFunc("GET /demo/verify/status", c.verifyStatus)
+	mux.HandleFunc("POST /demo/scenarios/leader-failover/start", c.startLeaderFailover)
+	mux.HandleFunc("GET /demo/scenarios/leader-failover/status", c.leaderFailoverStatus)
 	mux.HandleFunc("POST /demo/nodes/", c.nodeAction)
 
 	log.Printf("starting demo controller addr=%s root=%s", addr, root)
@@ -167,6 +179,64 @@ func (c *controller) hammerStatus(w http.ResponseWriter, _ *http.Request) {
 	defer c.mu.Unlock()
 
 	writeJSON(w, http.StatusOK, c.hammerJob)
+}
+
+func (c *controller) startVerify(w http.ResponseWriter, _ *http.Request) {
+	c.mu.Lock()
+	if c.verifyJob.State == jobRunning {
+		status := c.verifyJob
+		c.mu.Unlock()
+		writeJSON(w, http.StatusConflict, status)
+		return
+	}
+
+	now := time.Now().UTC()
+	c.verifyJob = jobStatus{
+		State:     jobRunning,
+		StartedAt: &now,
+		Output:    "",
+	}
+	c.mu.Unlock()
+
+	go c.runJob(&c.verifyJob, "scripts/verify-cluster.sh", "--timeout", "20")
+
+	c.verifyStatus(w, nil)
+}
+
+func (c *controller) verifyStatus(w http.ResponseWriter, _ *http.Request) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	writeJSON(w, http.StatusOK, c.verifyJob)
+}
+
+func (c *controller) startLeaderFailover(w http.ResponseWriter, _ *http.Request) {
+	c.mu.Lock()
+	if c.scenarioJob.State == jobRunning {
+		status := c.scenarioJob
+		c.mu.Unlock()
+		writeJSON(w, http.StatusConflict, status)
+		return
+	}
+
+	now := time.Now().UTC()
+	c.scenarioJob = jobStatus{
+		State:     jobRunning,
+		StartedAt: &now,
+		Output:    "",
+	}
+	c.mu.Unlock()
+
+	go c.runJob(&c.scenarioJob, "scripts/leader-failover-demo.sh", "--duration", "30", "--writers", "10", "--keyspace", "100")
+
+	c.leaderFailoverStatus(w, nil)
+}
+
+func (c *controller) leaderFailoverStatus(w http.ResponseWriter, _ *http.Request) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	writeJSON(w, http.StatusOK, c.scenarioJob)
 }
 
 func (c *controller) nodeAction(w http.ResponseWriter, r *http.Request) {

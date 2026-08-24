@@ -408,6 +408,63 @@ button:disabled {
   white-space: pre-wrap;
 }
 
+.verifySummary {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  margin-bottom: 12px;
+}
+
+.verifyMetric {
+  background: #eef3ef;
+  border: 1px solid #dfe5dc;
+  border-radius: 8px;
+  display: grid;
+  gap: 4px;
+  min-height: 72px;
+  padding: 12px;
+}
+
+.verifyMetric span {
+  color: #66736f;
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.verifyMetric strong {
+  color: #1c2526;
+  font-size: 20px;
+}
+
+.verifySummary.passed .verifyMetric:first-child {
+  background: #dcefe8;
+  border-color: #b7ddcd;
+}
+
+.verifySummary.failed .verifyMetric:first-child {
+  background: #f3dddd;
+  border-color: #e3b8b5;
+}
+
+.verifyIndexes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.verifyIndexes span {
+  background: #f7f2df;
+  border: 1px solid #e4d9b7;
+  border-radius: 999px;
+  color: #62552b;
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 800;
+  padding: 5px 9px;
+}
+
 .hammerControls {
   display: grid;
   gap: 12px;
