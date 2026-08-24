@@ -1,10 +1,11 @@
 import React from 'react';
 import { createRoot } from 'react-dom/client';
-import { Activity, CheckCircle2, Database, ListOrdered, Play, Power, RefreshCcw, RotateCcw, ShieldAlert, ShieldCheck, Terminal, Trash2 } from 'lucide-react';
+import { Activity, CheckCircle2, Database, Eye, EyeOff, ListOrdered, Play, Power, RefreshCcw, RotateCcw, ShieldAlert, ShieldCheck, Terminal, Trash2 } from 'lucide-react';
 import './styles.css';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '/api/node-1';
 const DEMOCTL_URL = import.meta.env.VITE_DEMOCTL_URL ?? '';
+const PREVIEW_ROW_COUNT = 3;
 
 const NODES = [
   { id: 'node-1', url: import.meta.env.VITE_NODE_1_URL ?? '/api/node-1' },
@@ -233,6 +234,9 @@ function App() {
   const [hammerWriters, setHammerWriters] = React.useState(10);
   const [hammerKeyspace, setHammerKeyspace] = React.useState(100);
   const [hammerReadAfterWrite, setHammerReadAfterWrite] = React.useState(false);
+  const [showAllEntries, setShowAllEntries] = React.useState(false);
+  const [showAllReplicationRows, setShowAllReplicationRows] = React.useState(false);
+  const [showAllLogEntries, setShowAllLogEntries] = React.useState(false);
 
   const demoFetch = React.useCallback(
     (path: string, init: RequestInit = {}) => {
@@ -266,6 +270,14 @@ function App() {
 
   const verifySummary = React.useMemo(() => parseVerifySummary(verifyStatus), [verifyStatus]);
   const scenarioSummary = React.useMemo(() => parseScenarioSummary(scenarioStatus), [scenarioStatus]);
+  const visibleEntries = showAllEntries ? entries : entries.slice(0, PREVIEW_ROW_COUNT);
+  const hiddenEntryCount = Math.max(entries.length - PREVIEW_ROW_COUNT, 0);
+  const visibleReplicationRows = showAllReplicationRows
+    ? replicatedLogRows
+    : replicatedLogRows.slice(0, PREVIEW_ROW_COUNT);
+  const hiddenReplicationRowCount = Math.max(replicatedLogRows.length - PREVIEW_ROW_COUNT, 0);
+  const visibleLogEntries = showAllLogEntries ? logEntries : logEntries.slice(0, PREVIEW_ROW_COUNT);
+  const hiddenLogEntryCount = Math.max(logEntries.length - PREVIEW_ROW_COUNT, 0);
 
   const refresh = React.useCallback(async () => {
     const snapshots = await Promise.all(
@@ -932,114 +944,153 @@ function App() {
         </div>
 
         <div className="panel entries">
-          <div className="panelTitle">
-            <Database size={18} />
-            <h2>Stored Keys</h2>
+          <div className="panelHeader">
+            <div className="panelTitle">
+              <Database size={18} />
+              <h2>Stored Keys</h2>
+            </div>
+            {hiddenEntryCount > 0 && (
+              <button className="secondary compactButton" onClick={() => setShowAllEntries((current) => !current)}>
+                {showAllEntries ? <EyeOff size={16} /> : <Eye size={16} />}
+                {showAllEntries ? 'Show first 3' : `Show all ${entries.length}`}
+              </button>
+            )}
           </div>
           {entries.length === 0 ? (
             <p className="empty">No keys stored yet.</p>
           ) : (
-            <table>
-              <thead>
-                <tr>
-                  <th>Key</th>
-                  <th>Value</th>
-                </tr>
-              </thead>
-              <tbody>
-                {entries.map((entry) => (
-                  <tr key={entry.key}>
-                    <td>{entry.key}</td>
-                    <td>{entry.value}</td>
+            <>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Key</th>
+                    <th>Value</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {visibleEntries.map((entry) => (
+                    <tr key={entry.key}>
+                      <td>{entry.key}</td>
+                      <td>{entry.value}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {!showAllEntries && hiddenEntryCount > 0 && (
+                <p className="tableHint">{hiddenEntryCount} more hidden.</p>
+              )}
+            </>
           )}
         </div>
 
         <div className="panel entries">
-          <div className="panelTitle">
-            <ListOrdered size={18} />
-            <h2>Replication Matrix</h2>
+          <div className="panelHeader">
+            <div className="panelTitle">
+              <ListOrdered size={18} />
+              <h2>Replication Matrix</h2>
+            </div>
+            {hiddenReplicationRowCount > 0 && (
+              <button className="secondary compactButton" onClick={() => setShowAllReplicationRows((current) => !current)}>
+                {showAllReplicationRows ? <EyeOff size={16} /> : <Eye size={16} />}
+                {showAllReplicationRows ? 'Show first 3' : `Show all ${replicatedLogRows.length}`}
+              </button>
+            )}
           </div>
           {replicatedLogRows.length === 0 ? (
             <p className="empty">No replicated operations yet.</p>
           ) : (
-            <table>
-              <thead>
-                <tr>
-                  <th>Index</th>
-                  <th>Operation</th>
-                  <th>Key</th>
-                  {NODES.map((node) => (
-                    <th key={node.id}>{node.id}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {replicatedLogRows.map((entry) => (
-                  <tr key={entry.index}>
-                    <td>{entry.index}</td>
-                    <td>
-                      <span className={`operationBadge ${entry.operation}`}>{entry.operation}</span>
-                    </td>
-                    <td>{entry.key}</td>
-                    {NODES.map((node) => {
-                      const snapshot = nodeSnapshots.find((item) => item.id === node.id);
-                      const appliedEntry = snapshot?.logEntries.find((item) => item.index === entry.index);
-                      const matches =
-                        appliedEntry?.operation === entry.operation &&
-                        appliedEntry?.key === entry.key &&
-                        appliedEntry?.value === entry.value;
-
-                      return (
-                        <td key={node.id}>
-                          <span className={`replicationCell ${matches ? 'applied' : 'missing'}`}>
-                            {matches ? 'applied' : 'missing'}
-                          </span>
-                        </td>
-                      );
-                    })}
+            <>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Index</th>
+                    <th>Operation</th>
+                    <th>Key</th>
+                    {NODES.map((node) => (
+                      <th key={node.id}>{node.id}</th>
+                    ))}
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {visibleReplicationRows.map((entry) => (
+                    <tr key={entry.index}>
+                      <td>{entry.index}</td>
+                      <td>
+                        <span className={`operationBadge ${entry.operation}`}>{entry.operation}</span>
+                      </td>
+                      <td>{entry.key}</td>
+                      {NODES.map((node) => {
+                        const snapshot = nodeSnapshots.find((item) => item.id === node.id);
+                        const appliedEntry = snapshot?.logEntries.find((item) => item.index === entry.index);
+                        const matches =
+                          appliedEntry?.operation === entry.operation &&
+                          appliedEntry?.key === entry.key &&
+                          appliedEntry?.value === entry.value;
+
+                        return (
+                          <td key={node.id}>
+                            <span className={`replicationCell ${matches ? 'applied' : 'missing'}`}>
+                              {matches ? 'applied' : 'missing'}
+                            </span>
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {!showAllReplicationRows && hiddenReplicationRowCount > 0 && (
+                <p className="tableHint">{hiddenReplicationRowCount} more hidden.</p>
+              )}
+            </>
           )}
         </div>
 
         <div className="panel entries">
-          <div className="panelTitle">
-            <ListOrdered size={18} />
-            <h2>Operation Log</h2>
+          <div className="panelHeader">
+            <div className="panelTitle">
+              <ListOrdered size={18} />
+              <h2>Operation Log</h2>
+            </div>
+            {hiddenLogEntryCount > 0 && (
+              <button className="secondary compactButton" onClick={() => setShowAllLogEntries((current) => !current)}>
+                {showAllLogEntries ? <EyeOff size={16} /> : <Eye size={16} />}
+                {showAllLogEntries ? 'Show first 3' : `Show all ${logEntries.length}`}
+              </button>
+            )}
           </div>
           {logEntries.length === 0 ? (
             <p className="empty">No mutations logged yet.</p>
           ) : (
-            <table>
-              <thead>
-                <tr>
-                  <th>Index</th>
-                  <th>Operation</th>
-                  <th>Key</th>
-                  <th>Value</th>
-                  <th>Created</th>
-                </tr>
-              </thead>
-              <tbody>
-                {logEntries.map((entry) => (
-                  <tr key={entry.index}>
-                    <td>{entry.index}</td>
-                    <td>
-                      <span className={`operationBadge ${entry.operation}`}>{entry.operation}</span>
-                    </td>
-                    <td>{entry.key}</td>
-                    <td>{entry.value ?? ''}</td>
-                    <td>{new Date(entry.createdAt).toLocaleTimeString()}</td>
+            <>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Index</th>
+                    <th>Operation</th>
+                    <th>Key</th>
+                    <th>Value</th>
+                    <th>Created</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {visibleLogEntries.map((entry) => (
+                    <tr key={entry.index}>
+                      <td>{entry.index}</td>
+                      <td>
+                        <span className={`operationBadge ${entry.operation}`}>{entry.operation}</span>
+                      </td>
+                      <td>{entry.key}</td>
+                      <td>{entry.value ?? ''}</td>
+                      <td>{new Date(entry.createdAt).toLocaleTimeString()}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {!showAllLogEntries && hiddenLogEntryCount > 0 && (
+                <p className="tableHint">{hiddenLogEntryCount} more hidden.</p>
+              )}
+            </>
           )}
         </div>
       </section>
