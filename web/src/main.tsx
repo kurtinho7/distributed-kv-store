@@ -233,31 +233,18 @@ function App() {
   const [hammerWriters, setHammerWriters] = React.useState(10);
   const [hammerKeyspace, setHammerKeyspace] = React.useState(100);
   const [hammerReadAfterWrite, setHammerReadAfterWrite] = React.useState(false);
-  const [demoToken, setDemoToken] = React.useState(() => window.localStorage.getItem('democtlToken') ?? '');
 
   const demoFetch = React.useCallback(
     (path: string, init: RequestInit = {}) => {
       const headers = new Headers(init.headers);
-      if (demoToken) {
-        headers.set('Authorization', `Bearer ${demoToken}`);
-      }
 
       return fetch(`${DEMOCTL_URL}${path}`, {
         ...init,
         headers,
       });
     },
-    [demoToken],
+    [],
   );
-
-  React.useEffect(() => {
-    if (demoToken) {
-      window.localStorage.setItem('democtlToken', demoToken);
-      return;
-    }
-
-    window.localStorage.removeItem('democtlToken');
-  }, [demoToken]);
 
   const replicatedLogRows = React.useMemo(() => {
     const entriesByIndex = new Map<number, LogEntry>();
@@ -599,16 +586,6 @@ function App() {
           <h1>Distributed KV Store</h1>
           <p>Active API: {activeApiUrl}</p>
         </div>
-        <label className="tokenField">
-          Demo token
-          <input
-            autoComplete="off"
-            placeholder="Optional locally; required on hosted demo"
-            type="password"
-            value={demoToken}
-            onChange={(event) => setDemoToken(event.target.value)}
-          />
-        </label>
         <button className="iconButton" onClick={refresh} title="Refresh cluster state">
           <RefreshCcw size={18} />
         </button>
