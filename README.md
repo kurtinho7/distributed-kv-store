@@ -1,5 +1,7 @@
 # Distributed KV Store
 
+[Try It Out!](https://kv.kurthymanyk.dev/)
+
 A resume-oriented distributed systems project: a key-value store with a Go backend and a React dashboard. The backend now runs as a small replicated cluster with append-only logs, follower write forwarding, majority acknowledgements, Raft-inspired leader election, peer health checks, and controlled fault simulation.
 
 ## Project Layout
