@@ -68,6 +68,11 @@ type DemoJobStatus = {
   endedAt?: string;
 };
 
+type DemoErrorResponse = {
+  error?: string;
+  output?: string;
+};
+
 type VerifyLogIndex = {
   nodeId: string;
   index: number;
@@ -96,7 +101,7 @@ type ScenarioSummary = {
 };
 
 function parseVerifySummary(status: DemoJobStatus): VerifySummary {
-  const output = status.output;
+  const output = status.output ?? '';
   const reachableMatch = output.match(/Reachable nodes:\s+(\d+)/);
   const leadersMatch = output.match(/(?:Leaders|Leader count):\s+(\d+)/);
   const logIndexes = Array.from(output.matchAll(/(node-\d+)=(\d+)/g)).map((match) => ({
@@ -126,7 +131,7 @@ function parseVerifySummary(status: DemoJobStatus): VerifySummary {
 }
 
 function parseScenarioSummary(status: DemoJobStatus): ScenarioSummary {
-  const output = status.output;
+  const output = status.output ?? '';
   const initialLeaderMatch = output.match(/current leader:\s+(node-\d+)/);
   const newLeaderMatch = output.match(/new leader:\s+(node-\d+)/);
   const partitionedFollowerMatch = output.match(/partitioned follower:\s+(node-\d+)/);
@@ -178,6 +183,23 @@ function parseScenarioSummary(status: DemoJobStatus): ScenarioSummary {
     correctness,
     finalLogIndex,
     logIndexes,
+  };
+}
+
+function normalizeDemoStatus(response: Response, body: DemoJobStatus | DemoErrorResponse): DemoJobStatus {
+  if ('state' in body && body.state) {
+    return {
+      ...body,
+      output: body.output ?? '',
+    };
+  }
+
+  return {
+    state: 'failed',
+    output:
+      ('error' in body ? body.error : undefined) ??
+      body.output ??
+      (response.ok ? '' : `Request failed with HTTP ${response.status}`),
   };
 }
 
@@ -326,25 +348,25 @@ function App() {
   const refreshChaosStatus = React.useCallback(async () => {
     const response = await demoFetch('/demo/chaos/status');
     const body = await response.json();
-    setChaosStatus(body);
+    setChaosStatus(normalizeDemoStatus(response, body));
   }, [demoFetch]);
 
   const refreshHammerStatus = React.useCallback(async () => {
     const response = await demoFetch('/demo/hammer/status');
     const body = await response.json();
-    setHammerStatus(body);
+    setHammerStatus(normalizeDemoStatus(response, body));
   }, [demoFetch]);
 
   const refreshVerifyStatus = React.useCallback(async () => {
     const response = await demoFetch('/demo/verify/status');
     const body = await response.json();
-    setVerifyStatus(body);
+    setVerifyStatus(normalizeDemoStatus(response, body));
   }, [demoFetch]);
 
   const refreshScenarioStatus = React.useCallback(async () => {
     const response = await demoFetch('/demo/scenarios/leader-failover/status');
     const body = await response.json();
-    setScenarioStatus(body);
+    setScenarioStatus(normalizeDemoStatus(response, body));
   }, [demoFetch]);
 
   React.useEffect(() => {
@@ -506,8 +528,9 @@ function App() {
       method: 'POST',
     });
     const body = await response.json();
-    setChaosStatus(body);
-    setResult(response.ok ? 'Chaos demo started.' : 'Chaos demo is already running.');
+    const status = normalizeDemoStatus(response, body);
+    setChaosStatus(status);
+    setResult(response.ok ? 'Chaos demo started.' : status.output || 'Chaos demo is already running.');
   }
 
   async function startHammer() {
@@ -522,8 +545,9 @@ function App() {
       }),
     });
     const body = await response.json();
-    setHammerStatus(body);
-    setResult(response.ok ? 'Traffic hammer started.' : 'Traffic hammer is already running.');
+    const status = normalizeDemoStatus(response, body);
+    setHammerStatus(status);
+    setResult(response.ok ? 'Traffic hammer started.' : status.output || 'Traffic hammer is already running.');
   }
 
   async function startVerify() {
@@ -531,8 +555,9 @@ function App() {
       method: 'POST',
     });
     const body = await response.json();
-    setVerifyStatus(body);
-    setResult(response.ok ? 'Cluster verification started.' : 'Cluster verification is already running.');
+    const status = normalizeDemoStatus(response, body);
+    setVerifyStatus(status);
+    setResult(response.ok ? 'Cluster verification started.' : status.output || 'Cluster verification is already running.');
   }
 
   async function startLeaderFailover() {
@@ -540,8 +565,9 @@ function App() {
       method: 'POST',
     });
     const body = await response.json();
-    setScenarioStatus(body);
-    setResult(response.ok ? 'Leader failover scenario started.' : 'Leader failover scenario is already running.');
+    const status = normalizeDemoStatus(response, body);
+    setScenarioStatus(status);
+    setResult(response.ok ? 'Leader failover scenario started.' : status.output || 'Leader failover scenario is already running.');
   }
 
   async function startFollowerCatchUp() {
@@ -549,8 +575,9 @@ function App() {
       method: 'POST',
     });
     const body = await response.json();
-    setScenarioStatus(body);
-    setResult(response.ok ? 'Follower catch-up scenario started.' : 'A scenario is already running.');
+    const status = normalizeDemoStatus(response, body);
+    setScenarioStatus(status);
+    setResult(response.ok ? 'Follower catch-up scenario started.' : status.output || 'A scenario is already running.');
   }
 
   async function runNodeAction(nodeID: string, action: 'start' | 'stop' | 'restart') {
