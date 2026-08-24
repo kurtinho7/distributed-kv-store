@@ -1,4 +1,4 @@
-:80 {
+:kv.kurthymanyk.dev {
 	handle_path /api/node-1/* {
 		reverse_proxy node-1:8080
 	}
