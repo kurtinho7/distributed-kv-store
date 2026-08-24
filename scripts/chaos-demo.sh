@@ -18,8 +18,18 @@ if [[ -n "${KV_NODE_URLS:-}" ]]; then
   NODE_5="${node_urls[4]}"
 fi
 
-PARTITIONED_NODE="node-5"
-PARTITIONED_URL="$NODE_5"
+NODES=(
+  "node-1=${NODE_1}"
+  "node-2=${NODE_2}"
+  "node-3=${NODE_3}"
+  "node-4=${NODE_4}"
+  "node-5=${NODE_5}"
+)
+
+PARTITIONED_NODE=""
+PARTITIONED_URL=""
+LEADER_ID=""
+LEADER_URL=""
 DURATION_SECONDS=15
 WRITERS=8
 KEYSPACE=50
@@ -76,6 +86,22 @@ request() {
   curl --silent --show-error "$@"
 }
 
+node_id() {
+  printf "%s" "${1%%=*}"
+}
+
+node_url() {
+  printf "%s" "${1#*=}"
+}
+
+cleanup() {
+  if [[ -n "$LEADER_URL" && -n "$PARTITIONED_NODE" ]]; then
+    request -X DELETE "${LEADER_URL}/faults/replication/${PARTITIONED_NODE}" >/dev/null 2>&1 || true
+  fi
+}
+
+trap cleanup EXIT
+
 wait_for_node() {
   local node_url="$1"
   local name="$2"
@@ -91,11 +117,61 @@ wait_for_node() {
   fail "${name} did not become healthy"
 }
 
+find_leader() {
+  for node in "${NODES[@]}"; do
+    local id
+    local url
+    local body
+    id="$(node_id "$node")"
+    url="$(node_url "$node")"
+
+    if ! body="$(request --fail "${url}/raft" 2>/dev/null)"; then
+      continue
+    fi
+
+    if printf "%s" "$body" | grep -q '"role":"leader"'; then
+      LEADER_ID="$id"
+      LEADER_URL="$url"
+      return
+    fi
+  done
+
+  fail "could not find a leader"
+}
+
+choose_partitioned_follower() {
+  for node in "${NODES[@]}"; do
+    local id
+    id="$(node_id "$node")"
+    if [[ "$id" != "$LEADER_ID" ]]; then
+      PARTITIONED_NODE="$id"
+      PARTITIONED_URL="$(node_url "$node")"
+      return
+    fi
+  done
+
+  fail "could not choose a follower to partition"
+}
+
 last_log_index() {
   local node_url="$1"
   local body
   body="$(request --fail "${node_url}/log")"
   printf "%s" "$body" | sed -n 's/.*"index":\([0-9][0-9]*\).*/\1/p' | tail -n 1
+}
+
+hammer_targets() {
+  local targets=()
+  for node in "${NODES[@]}"; do
+    if [[ "$(node_id "$node")" == "$PARTITIONED_NODE" ]]; then
+      continue
+    fi
+    targets+=("$(node_url "$node")")
+  done
+
+  local joined
+  joined="$(IFS=,; printf "%s" "${targets[*]}")"
+  printf "%s" "$joined"
 }
 
 compact_log() {
@@ -105,10 +181,24 @@ compact_log() {
 
 wait_for_convergence() {
   for _ in $(seq 1 30); do
-    if [[ "$(compact_log "$NODE_1")" == "$(compact_log "$NODE_2")" ]] &&
-      [[ "$(compact_log "$NODE_1")" == "$(compact_log "$NODE_3")" ]] &&
-      [[ "$(compact_log "$NODE_1")" == "$(compact_log "$NODE_4")" ]] &&
-      [[ "$(compact_log "$NODE_1")" == "$(compact_log "$NODE_5")" ]]; then
+    local expected=""
+    local converged=true
+
+    for node in "${NODES[@]}"; do
+      local compact
+      compact="$(compact_log "$(node_url "$node")")"
+      if [[ -z "$expected" ]]; then
+        expected="$compact"
+        continue
+      fi
+
+      if [[ "$compact" != "$expected" ]]; then
+        converged=false
+        break
+      fi
+    done
+
+    if [[ "$converged" == true ]]; then
       printf "all node logs converged\n"
       return
     fi
@@ -126,52 +216,57 @@ docker compose rm -f -v "${COMPOSE_SERVICES[@]}" >/dev/null 2>&1 || true
 docker compose up --build -d "${COMPOSE_SERVICES[@]}"
 
 log "Waiting for nodes"
-wait_for_node "$NODE_1" "node-1"
-wait_for_node "$NODE_2" "node-2"
-wait_for_node "$NODE_3" "node-3"
-wait_for_node "$NODE_4" "node-4"
-wait_for_node "$NODE_5" "node-5"
+for node in "${NODES[@]}"; do
+  wait_for_node "$(node_url "$node")" "$(node_id "$node")"
+done
+
+log "Finding current leader"
+find_leader
+printf "current leader: %s\n" "$LEADER_ID"
+
+choose_partitioned_follower
+printf "partitioned follower: %s\n" "$PARTITIONED_NODE"
 
 log "Partitioning ${PARTITIONED_NODE} from leader replication and catch-up"
-request --fail -X POST "${NODE_1}/faults/replication/${PARTITIONED_NODE}" >/dev/null
-request --fail "${NODE_1}/faults"
+request --fail -X POST "${LEADER_URL}/faults/replication/${PARTITIONED_NODE}" >/dev/null
+request --fail "${LEADER_URL}/faults"
 
 log "Hammering traffic while ${PARTITIONED_NODE} is partitioned"
 "${ROOT_DIR}/scripts/hammer.sh" \
   --duration "$DURATION_SECONDS" \
   --writers "$WRITERS" \
   --keyspace "$KEYSPACE" \
-  --nodes "${NODE_1},${NODE_2},${NODE_3},${NODE_4}"
+  --nodes "$(hammer_targets)"
 
 log "Checking that majority moved ahead while ${PARTITIONED_NODE} lagged"
-node_1_index="$(last_log_index "$NODE_1")"
-node_2_index="$(last_log_index "$NODE_2")"
-node_3_index="$(last_log_index "$NODE_3")"
-node_4_index="$(last_log_index "$NODE_4")"
+leader_index="$(last_log_index "$LEADER_URL")"
 partitioned_index="$(last_log_index "$PARTITIONED_URL")"
-node_1_index="${node_1_index:-0}"
-node_2_index="${node_2_index:-0}"
-node_3_index="${node_3_index:-0}"
-node_4_index="${node_4_index:-0}"
+leader_index="${leader_index:-0}"
 partitioned_index="${partitioned_index:-0}"
 
-printf "node-1 index: %s\n" "$node_1_index"
-printf "node-2 index: %s\n" "$node_2_index"
-printf "node-3 index: %s\n" "$node_3_index"
-printf "node-4 index: %s\n" "$node_4_index"
+for node in "${NODES[@]}"; do
+  if [[ "$(node_id "$node")" == "$PARTITIONED_NODE" ]]; then
+    continue
+  fi
+
+  index="$(last_log_index "$(node_url "$node")")"
+  index="${index:-0}"
+  printf "%s index: %s\n" "$(node_id "$node")" "$index"
+
+  if [[ "$index" -eq 0 ]]; then
+    fail "$(node_id "$node") did not accept traffic"
+  fi
+done
 printf "%s index: %s\n" "$PARTITIONED_NODE" "$partitioned_index"
 
-if [[ "$node_1_index" -eq 0 || "$node_2_index" -eq 0 || "$node_3_index" -eq 0 || "$node_4_index" -eq 0 ]]; then
-  fail "majority nodes did not accept traffic"
-fi
-
-if [[ "$partitioned_index" -ge "$node_1_index" ]]; then
+if [[ "$partitioned_index" -ge "$leader_index" ]]; then
   fail "${PARTITIONED_NODE} did not lag while partitioned"
 fi
 
 log "Healing ${PARTITIONED_NODE}"
-request --fail -X DELETE "${NODE_1}/faults/replication/${PARTITIONED_NODE}" >/dev/null
-request --fail "${NODE_1}/faults"
+request --fail -X DELETE "${LEADER_URL}/faults/replication/${PARTITIONED_NODE}" >/dev/null
+request --fail "${LEADER_URL}/faults"
+PARTITIONED_NODE=""
 
 log "Waiting for catch-up"
 wait_for_convergence
