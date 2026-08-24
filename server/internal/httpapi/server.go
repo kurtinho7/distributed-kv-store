@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -19,6 +20,8 @@ import (
 	raftstate "kvstore/internal/raft"
 	"kvstore/internal/store"
 )
+
+const forwardedWriteHeader = "X-KV-Forwarded"
 
 type Server struct {
 	store   *store.Memory
@@ -118,9 +121,14 @@ func (s *Server) put(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if s.raft.Role() != raftstate.RoleLeader {
+		if r.Header.Get(forwardedWriteHeader) == "true" {
+			writeError(w, http.StatusServiceUnavailable, "node is not leader")
+			return
+		}
+
 		response, err := s.forwardToLeader(r, http.MethodPut, r.URL.Path, req)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to forward request to leader")
+			writeError(w, http.StatusServiceUnavailable, "failed to forward request to leader")
 			return
 		}
 		defer response.Body.Close()
@@ -162,9 +170,14 @@ func (s *Server) delete(w http.ResponseWriter, r *http.Request) {
 	key := keyFromPath(r)
 
 	if s.raft.Role() != raftstate.RoleLeader {
+		if r.Header.Get(forwardedWriteHeader) == "true" {
+			writeError(w, http.StatusServiceUnavailable, "node is not leader")
+			return
+		}
+
 		response, err := s.forwardToLeader(r, http.MethodDelete, r.URL.Path, nil)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to forward request to leader")
+			writeError(w, http.StatusServiceUnavailable, "failed to forward request to leader")
 			return
 		}
 		defer response.Body.Close()
@@ -211,7 +224,7 @@ func (s *Server) replicate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if s.cluster.IsLeader() {
+	if s.raft.Role() == raftstate.RoleLeader {
 		writeError(w, http.StatusBadRequest, "leader cannot accept replicated entries")
 		return
 	}
@@ -324,37 +337,55 @@ func withCORS(next http.Handler) http.Handler {
 }
 
 func (s *Server) forwardToLeader(r *http.Request, method, path string, payload any) (*http.Response, error) {
-	leaderID := s.raft.LeaderID()
-	if leaderID == "" {
-		return nil, errors.New("leader not known")
-	}
+	var lastErr error
 
-	leader, ok := s.cluster.MemberByID(leaderID)
-	if !ok {
-		return nil, errors.New("leader not found in cluster")
-	}
-
-	var body *bytes.Reader
-	if payload == nil {
-		body = bytes.NewReader(nil)
-	} else {
-		encoded, err := json.Marshal(payload)
+	var encoded []byte
+	if payload != nil {
+		var err error
+		encoded, err = json.Marshal(payload)
 		if err != nil {
 			return nil, err
 		}
-		body = bytes.NewReader(encoded)
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
-	defer cancel()
+	for _, leader := range s.leaderCandidates() {
+		var body *bytes.Reader
+		if payload == nil {
+			body = bytes.NewReader(nil)
+		} else {
+			body = bytes.NewReader(encoded)
+		}
 
-	request, err := http.NewRequestWithContext(ctx, method, leader.Address+path, body)
-	if err != nil {
-		return nil, err
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		request, err := http.NewRequestWithContext(ctx, method, leader.Address+path, body)
+		if err != nil {
+			cancel()
+			lastErr = err
+			continue
+		}
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set(forwardedWriteHeader, "true")
+
+		response, err := http.DefaultClient.Do(request)
+		cancel()
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		if response.StatusCode == http.StatusInternalServerError || response.StatusCode == http.StatusServiceUnavailable {
+			lastErr = fmt.Errorf("candidate %s returned status %d", leader.ID, response.StatusCode)
+			_ = response.Body.Close()
+			continue
+		}
+
+		return response, nil
 	}
-	request.Header.Set("Content-Type", "application/json")
 
-	return http.DefaultClient.Do(request)
+	if lastErr == nil {
+		lastErr = errors.New("leader not known")
+	}
+	return nil, lastErr
 }
 
 func (s *Server) internalLogEntries(w http.ResponseWriter, r *http.Request) {
@@ -475,4 +506,29 @@ func (s *Server) replicateCommitToPeers(r *http.Request) {
 		}
 		_ = response.Body.Close()
 	}
+}
+
+func (s *Server) leaderCandidates() []cluster.Member {
+	seen := make(map[string]bool)
+	candidates := make([]cluster.Member, 0)
+
+	add := func(member cluster.Member) {
+		if member.ID == "" || seen[member.ID] {
+			return
+		}
+		seen[member.ID] = true
+		candidates = append(candidates, member)
+	}
+
+	if leaderID := s.raft.LeaderID(); leaderID != "" {
+		if leader, ok := s.cluster.MemberByID(leaderID); ok {
+			add(leader)
+		}
+	}
+
+	for _, peer := range s.cluster.Peers() {
+		add(peer)
+	}
+
+	return candidates
 }

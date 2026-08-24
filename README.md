@@ -198,6 +198,8 @@ Hammer the cluster with concurrent writes:
 ./scripts/hammer.sh --duration 30 --writers 10 --keyspace 100
 ```
 
+The hammer summary includes per-status counts so availability failures can be grouped by HTTP status or connection failure (`000`).
+
 Optionally read after each write:
 
 ```sh

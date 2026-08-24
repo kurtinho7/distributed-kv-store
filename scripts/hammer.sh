@@ -89,6 +89,7 @@ END_TIME=$((SECONDS + DURATION_SECONDS))
 writer() {
   local writer_id="$1"
   local stats_file="${TMP_DIR}/writer-${writer_id}.stats"
+  local codes_file="${TMP_DIR}/writer-${writer_id}.codes"
   local writes=0
   local write_successes=0
   local write_failures=0
@@ -105,6 +106,7 @@ writer() {
       -X PUT "${node}/kv/${key}" \
       -H "Content-Type: application/json" \
       -d "{\"value\":\"${value}\"}" || true)"
+    printf "write:%s\n" "$status" >>"$codes_file"
 
     writes=$((writes + 1))
     if [[ "$status" =~ ^2 ]]; then
@@ -116,6 +118,7 @@ writer() {
 
     if [[ "$READ_AFTER_WRITE" == true ]]; then
       status="$(curl --silent --output /dev/null --write-out "%{http_code}" "${node}/kv/${key}" || true)"
+      printf "read:%s\n" "$status" >>"$codes_file"
       if [[ "$status" =~ ^2 ]]; then
         read_successes=$((read_successes + 1))
       else
@@ -147,6 +150,7 @@ total_write_successes=0
 total_write_failures=0
 total_read_successes=0
 total_read_failures=0
+status_counts_file="${TMP_DIR}/status-counts.txt"
 
 for stats_file in "${TMP_DIR}"/*.stats; do
   read -r writes write_successes write_failures read_successes read_failures <"$stats_file"
@@ -156,6 +160,11 @@ for stats_file in "${TMP_DIR}"/*.stats; do
   total_read_successes=$((total_read_successes + read_successes))
   total_read_failures=$((total_read_failures + read_failures))
 done
+
+cat "${TMP_DIR}"/*.codes 2>/dev/null |
+  sort |
+  uniq -c |
+  sort -k2 >"$status_counts_file" || true
 
 ops_per_second=$((total_writes / DURATION_SECONDS))
 
@@ -173,6 +182,14 @@ Read successes:  ${total_read_successes}
 Read failures:   ${total_read_failures}
 Approx ops/sec:  ${ops_per_second}
 EOF
+
+if [[ -s "$status_counts_file" ]]; then
+  printf "\nStatus breakdown\n"
+  printf "%s\n" "----------------"
+  while read -r count label; do
+    printf "%-10s %s\n" "$label" "$count"
+  done <"$status_counts_file"
+fi
 
 if [[ "$total_write_successes" -eq 0 ]]; then
   exit 1

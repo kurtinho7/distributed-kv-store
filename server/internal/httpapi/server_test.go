@@ -235,6 +235,60 @@ func TestFollowerRejectsInternalLogRequest(t *testing.T) {
 	}
 }
 
+func TestFollowerRetriesOtherLeaderCandidates(t *testing.T) {
+	retryCandidateCalled := make(chan struct{}, 1)
+	retryCandidate := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get(forwardedWriteHeader) != "true" {
+			t.Errorf("expected forwarded write header")
+		}
+
+		retryCandidateCalled <- struct{}{}
+		writeJSON(w, http.StatusOK, keyResponse{Key: "retry", Value: "ok"})
+	}))
+	defer retryCandidate.Close()
+
+	kv := store.NewMemory()
+	members := []cluster.Member{
+		{ID: "node-1", Address: "http://127.0.0.1:1"},
+		{ID: "node-2", Address: "http://localhost:8081"},
+		{ID: "node-3", Address: retryCandidate.URL},
+	}
+	clusterState := cluster.NewState("node-2", "node-1", members)
+	log := oplog.New()
+	raft := raftstate.NewState("node-2")
+	raft.BecomeFollower(1, "node-1")
+	faultsState := faults.NewState()
+	applier := apply.NewApplier(log, kv)
+	handler := NewServer(kv, clusterState, log, raft, faultsState, applier).Routes()
+
+	request := httptest.NewRequest(http.MethodPut, "/kv/retry", bytes.NewBufferString(`{"value":"ok"}`))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected forwarded PUT status 200, got %d: %s", response.Code, response.Body.String())
+	}
+
+	select {
+	case <-retryCandidateCalled:
+	default:
+		t.Fatal("expected retry candidate to receive forwarded request")
+	}
+}
+
+func TestForwardedWriteStopsAtFollower(t *testing.T) {
+	handler := newFollowerTestServer()
+
+	request := httptest.NewRequest(http.MethodPut, "/kv/no-loop", bytes.NewBufferString(`{"value":"stop"}`))
+	request.Header.Set(forwardedWriteHeader, "true")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected forwarded follower status 503, got %d: %s", response.Code, response.Body.String())
+	}
+}
+
 func TestRequestVoteEndpoint(t *testing.T) {
 	handler := newTestServer()
 
