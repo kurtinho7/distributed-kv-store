@@ -205,6 +205,6 @@ log "Giving restarted leader time to catch up"
 sleep 10
 
 log "Verifying convergence after failover"
-"${ROOT_DIR}/scripts/verify-cluster.sh" --timeout 60
+"${ROOT_DIR}/scripts/verify-cluster.sh" --timeout 120
 
 log "Leader failover under load passed"

@@ -49,7 +49,7 @@ func main() {
 	go healthChecker.Start(context.Background())
 	raft := raftstate.NewState(nodeID)
 
-	if nodeID == leaderID {
+	if nodeID == leaderID && operationLog.LastIndex() == 0 {
 		raft.BecomeCandidate()
 		raft.BecomeLeader()
 	}

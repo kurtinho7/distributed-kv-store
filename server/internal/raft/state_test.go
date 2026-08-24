@@ -1,8 +1,14 @@
 package raft
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
+
+	"kvstore/internal/cluster"
 )
 
 func TestNewStateStartsAsFollower(t *testing.T) {
@@ -216,5 +222,36 @@ func TestLeaderTimedOutReturnsFalseAfterHeartbeat(t *testing.T) {
 
 	if state.LeaderTimedOut(1 * time.Second) {
 		t.Fatal("expected recent heartbeat not to time out")
+	}
+}
+
+func TestHeartbeatSenderStepsDownOnHigherTermResponse(t *testing.T) {
+	state := NewState("node-1")
+	state.BecomeCandidate()
+	state.BecomeLeader()
+
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/internal/raft/append-entries" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(AppendEntriesResponse{
+			Term:    2,
+			Success: false,
+		})
+	}))
+	defer peer.Close()
+
+	sender := NewHeartbeatSender(state, []cluster.Member{
+		{ID: "node-2", Address: peer.URL},
+	})
+
+	sender.send(context.Background())
+
+	if state.Role() != RoleFollower {
+		t.Fatalf("expected leader to step down, got %q", state.Role())
+	}
+
+	if state.CurrentTerm() != 2 {
+		t.Fatalf("expected term 2, got %d", state.CurrentTerm())
 	}
 }

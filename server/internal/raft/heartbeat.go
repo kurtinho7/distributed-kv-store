@@ -70,6 +70,17 @@ func (h *HeartbeatSender) send(ctx context.Context) {
 			log.Printf("heartbeat to %s failed: %v", peer.ID, err)
 			continue
 		}
+
+		var heartbeat AppendEntriesResponse
+		if err := json.NewDecoder(response.Body).Decode(&heartbeat); err != nil {
+			_ = response.Body.Close()
+			continue
+		}
 		_ = response.Body.Close()
+
+		if heartbeat.Term > h.state.CurrentTerm() {
+			h.state.BecomeFollower(heartbeat.Term, "")
+			return
+		}
 	}
 }

@@ -177,6 +177,6 @@ log "Waiting for catch-up"
 wait_for_convergence
 
 log "Verifying cluster correctness"
-"${ROOT_DIR}/scripts/verify-cluster.sh" --timeout 30
+"${ROOT_DIR}/scripts/verify-cluster.sh" --timeout 60
 
 log "Chaos demo passed"
