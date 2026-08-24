@@ -9,6 +9,7 @@ import (
 	"kvstore/internal/oplog"
 	"kvstore/internal/raft"
 	"kvstore/internal/store"
+	"kvstore/internal/apply"
 )
 
 type CatchUpRunner struct {
@@ -16,14 +17,16 @@ type CatchUpRunner struct {
 	raft    *raft.State
 	log     *oplog.Log
 	store   *store.Memory
+	applier *apply.Applier
 }
 
-func NewCatchUpRunner(cluster *cluster.State, raft *raft.State, log *oplog.Log, store *store.Memory) *CatchUpRunner {
+func NewCatchUpRunner(cluster *cluster.State, raft *raft.State, log *oplog.Log, store *store.Memory, applier *apply.Applier) *CatchUpRunner{
 	return &CatchUpRunner{
 		cluster: cluster,
 		raft:    raft,
 		log:     log,
 		store:   store,
+		applier: applier,
 	}
 }
 
@@ -58,7 +61,7 @@ func (r *CatchUpRunner) catchUp(ctx context.Context) {
 		return
 	}
 
-	if err := CatchUp(ctx, r.cluster.NodeID(), leader.Address, r.log, r.store); err != nil {
+	if err := CatchUp(ctx, r.cluster.NodeID(), leader.Address, r.log, r.store, r.applier); err != nil {
 		log.Printf("periodic catch-up from leader %s failed: %v", leader.ID, err)
 	}
 }

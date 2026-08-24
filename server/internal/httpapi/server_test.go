@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"kvstore/internal/apply"
 	"kvstore/internal/cluster"
 	"kvstore/internal/faults"
 	"kvstore/internal/oplog"
@@ -115,7 +116,8 @@ func newTestServer() http.Handler {
 	raft.BecomeCandidate()
 	raft.BecomeLeader()
 	faultsState := faults.NewState()
-	return NewServer(kv, state, log, raft, faultsState).Routes()
+	applier := apply.NewApplier(log, kv)
+	return NewServer(kv, state, log, raft, faultsState, applier).Routes()
 }
 
 func newFollowerTestServer() http.Handler {
@@ -128,18 +130,22 @@ func newFollowerTestServer() http.Handler {
 	log := oplog.New()
 	raft := raftstate.NewState("node-2")
 	faultsState := faults.NewState()
-	return NewServer(kv, state, log, raft, faultsState).Routes()
+	applier := apply.NewApplier(log, kv)
+	return NewServer(kv, state, log, raft, faultsState, applier).Routes()
 }
 
 func TestReplicateAppliesEntryOnFollower(t *testing.T) {
 	handler := newFollowerTestServer()
 
 	body := bytes.NewBufferString(`{
-		"index": 1,
-		"operation": "put",
-		"key": "language",
-		"value": "go",
-		"createdAt": "2026-08-18T00:00:00Z"
+		"entry": {
+			"index": 1,
+			"operation": "put",
+			"key": "language",
+			"value": "go",
+			"createdAt": "2026-08-18T00:00:00Z"
+		},
+		"leaderCommit": 1
 	}`)
 
 	request := httptest.NewRequest(http.MethodPost, "/internal/replicate", body)
@@ -323,7 +329,8 @@ func TestClusterEndpointUsesRaftLeader(t *testing.T) {
 	raft.BecomeFollower(2, "node-2")
 
 	faultsState := faults.NewState()
-	handler := NewServer(kv, clusterState, log, raft, faultsState).Routes()
+	applier := apply.NewApplier(log, kv)
+	handler := NewServer(kv, clusterState, log, raft, faultsState, applier).Routes()
 
 	request := httptest.NewRequest(http.MethodGet, "/cluster", nil)
 	response := httptest.NewRecorder()
@@ -379,7 +386,8 @@ func TestLeaderSkipsReplicationToFaultedPeer(t *testing.T) {
 	raft.BecomeCandidate()
 	raft.BecomeLeader()
 
-	handler := NewServer(kv, clusterState, log, raft, faultState).Routes()
+	applier := apply.NewApplier(log, kv)
+	handler := NewServer(kv, clusterState, log, raft, faultState, applier).Routes()
 
 	request := httptest.NewRequest(http.MethodPut, "/kv/faulted", bytes.NewBufferString(`{"value":"dropped"}`))
 	response := httptest.NewRecorder()
@@ -442,7 +450,8 @@ func TestFailedMajorityRollsBackPut(t *testing.T) {
 	raft.BecomeCandidate()
 	raft.BecomeLeader()
 
-	handler := NewServer(kv, clusterState, log, raft, faultState).Routes()
+	applier := apply.NewApplier(log, kv)
+	handler := NewServer(kv, clusterState, log, raft, faultState, applier).Routes()
 
 	request := httptest.NewRequest(http.MethodPut, "/kv/failed", bytes.NewBufferString(`{"value":"no-majority"}`))
 	response := httptest.NewRecorder()
@@ -482,7 +491,8 @@ func TestInternalLogRejectsPartitionedNode(t *testing.T) {
 	raft.BecomeCandidate()
 	raft.BecomeLeader()
 
-	handler := NewServer(kv, clusterState, log, raft, faultState).Routes()
+	applier := apply.NewApplier(log, kv)
+	handler := NewServer(kv, clusterState, log, raft, faultState, applier).Routes()
 
 	request := httptest.NewRequest(http.MethodGet, "/internal/log?after=0", nil)
 	request.Header.Set("X-Node-ID", "node-3")
@@ -492,5 +502,56 @@ func TestInternalLogRejectsPartitionedNode(t *testing.T) {
 
 	if response.Code != http.StatusServiceUnavailable {
 		t.Fatalf("expected partitioned catch-up status 503, got %d", response.Code)
+	}
+}
+
+func TestReplicateCommitAppliesExistingEntryOnFollower(t *testing.T) {
+	handler := newFollowerTestServer()
+
+	appendOnly := bytes.NewBufferString(`{
+		"entry": {
+			"index": 1,
+			"operation": "put",
+			"key": "language",
+			"value": "go",
+			"createdAt": "2026-08-18T00:00:00Z"
+		},
+		"leaderCommit": 0
+	}`)
+
+	appendRequest := httptest.NewRequest(http.MethodPost, "/internal/replicate", appendOnly)
+	appendResponse := httptest.NewRecorder()
+	handler.ServeHTTP(appendResponse, appendRequest)
+
+	if appendResponse.Code != http.StatusOK {
+		t.Fatalf("expected append replication status 200, got %d: %s", appendResponse.Code, appendResponse.Body.String())
+	}
+
+	getBeforeCommit := httptest.NewRequest(http.MethodGet, "/kv/language", nil)
+	getBeforeCommitResponse := httptest.NewRecorder()
+	handler.ServeHTTP(getBeforeCommitResponse, getBeforeCommit)
+
+	if getBeforeCommitResponse.Code != http.StatusNotFound {
+		t.Fatalf("expected uncommitted key to be hidden, got %d", getBeforeCommitResponse.Code)
+	}
+
+	commitOnly := bytes.NewBufferString(`{
+		"leaderCommit": 1
+	}`)
+
+	commitRequest := httptest.NewRequest(http.MethodPost, "/internal/replicate", commitOnly)
+	commitResponse := httptest.NewRecorder()
+	handler.ServeHTTP(commitResponse, commitRequest)
+
+	if commitResponse.Code != http.StatusOK {
+		t.Fatalf("expected commit replication status 200, got %d: %s", commitResponse.Code, commitResponse.Body.String())
+	}
+
+	getAfterCommit := httptest.NewRequest(http.MethodGet, "/kv/language", nil)
+	getAfterCommitResponse := httptest.NewRecorder()
+	handler.ServeHTTP(getAfterCommitResponse, getAfterCommit)
+
+	if getAfterCommitResponse.Code != http.StatusOK {
+		t.Fatalf("expected committed key to be readable, got %d", getAfterCommitResponse.Code)
 	}
 }

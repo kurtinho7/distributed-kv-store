@@ -8,6 +8,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -30,9 +32,23 @@ type jobStatus struct {
 }
 
 type controller struct {
-	mu     sync.Mutex
-	root   string
-	status jobStatus
+	mu        sync.Mutex
+	root      string
+	chaosJob  jobStatus
+	hammerJob jobStatus
+}
+
+type commandResponse struct {
+	NodeID string `json:"nodeId,omitempty"`
+	Action string `json:"action,omitempty"`
+	Output string `json:"output"`
+}
+
+type hammerRequest struct {
+	DurationSeconds int  `json:"durationSeconds"`
+	Writers         int  `json:"writers"`
+	Keyspace        int  `json:"keyspace"`
+	ReadAfterWrite  bool `json:"readAfterWrite"`
 }
 
 func main() {
@@ -40,7 +56,10 @@ func main() {
 	root := env("DEMOCTL_ROOT", findRoot())
 	c := &controller{
 		root: root,
-		status: jobStatus{
+		chaosJob: jobStatus{
+			State: jobIdle,
+		},
+		hammerJob: jobStatus{
 			State: jobIdle,
 		},
 	}
@@ -49,6 +68,9 @@ func main() {
 	mux.HandleFunc("GET /healthz", c.health)
 	mux.HandleFunc("POST /demo/chaos/start", c.startChaos)
 	mux.HandleFunc("GET /demo/chaos/status", c.chaosStatus)
+	mux.HandleFunc("POST /demo/hammer/start", c.startHammer)
+	mux.HandleFunc("GET /demo/hammer/status", c.hammerStatus)
+	mux.HandleFunc("POST /demo/nodes/", c.nodeAction)
 
 	log.Printf("starting demo controller addr=%s root=%s", addr, root)
 	if err := http.ListenAndServe(addr, withCORS(mux)); err != nil {
@@ -62,22 +84,22 @@ func (c *controller) health(w http.ResponseWriter, _ *http.Request) {
 
 func (c *controller) startChaos(w http.ResponseWriter, _ *http.Request) {
 	c.mu.Lock()
-	if c.status.State == jobRunning {
-		status := c.status
+	if c.chaosJob.State == jobRunning {
+		status := c.chaosJob
 		c.mu.Unlock()
 		writeJSON(w, http.StatusConflict, status)
 		return
 	}
 
 	now := time.Now().UTC()
-	c.status = jobStatus{
+	c.chaosJob = jobStatus{
 		State:     jobRunning,
 		StartedAt: &now,
 		Output:    "",
 	}
 	c.mu.Unlock()
 
-	go c.runScript("scripts/chaos-demo.sh", "--duration", "15", "--writers", "8", "--keyspace", "50")
+	go c.runJob(&c.chaosJob, "scripts/chaos-demo.sh", "--duration", "15", "--writers", "8", "--keyspace", "50")
 
 	c.chaosStatus(w, nil)
 }
@@ -86,10 +108,115 @@ func (c *controller) chaosStatus(w http.ResponseWriter, _ *http.Request) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	writeJSON(w, http.StatusOK, c.status)
+	writeJSON(w, http.StatusOK, c.chaosJob)
 }
 
-func (c *controller) runScript(script string, args ...string) {
+func (c *controller) startHammer(w http.ResponseWriter, r *http.Request) {
+	req := hammerRequest{
+		DurationSeconds: 30,
+		Writers:         10,
+		Keyspace:        100,
+	}
+	if r.Body != nil {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON body")
+			return
+		}
+	}
+	if req.DurationSeconds <= 0 {
+		req.DurationSeconds = 30
+	}
+	if req.Writers <= 0 {
+		req.Writers = 10
+	}
+	if req.Keyspace <= 0 {
+		req.Keyspace = 100
+	}
+
+	c.mu.Lock()
+	if c.hammerJob.State == jobRunning {
+		status := c.hammerJob
+		c.mu.Unlock()
+		writeJSON(w, http.StatusConflict, status)
+		return
+	}
+
+	now := time.Now().UTC()
+	c.hammerJob = jobStatus{
+		State:     jobRunning,
+		StartedAt: &now,
+		Output:    "",
+	}
+	c.mu.Unlock()
+
+	args := []string{
+		"--duration", strconv.Itoa(req.DurationSeconds),
+		"--writers", strconv.Itoa(req.Writers),
+		"--keyspace", strconv.Itoa(req.Keyspace),
+	}
+	if req.ReadAfterWrite {
+		args = append(args, "--read-after-write")
+	}
+	go c.runJob(&c.hammerJob, "scripts/hammer.sh", args...)
+
+	c.hammerStatus(w, nil)
+}
+
+func (c *controller) hammerStatus(w http.ResponseWriter, _ *http.Request) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	writeJSON(w, http.StatusOK, c.hammerJob)
+}
+
+func (c *controller) nodeAction(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/demo/nodes/")
+	nodeID, action, ok := strings.Cut(path, "/")
+	if !ok || nodeID == "" || action == "" {
+		writeError(w, http.StatusBadRequest, "expected /demo/nodes/{nodeID}/{action}")
+		return
+	}
+
+	if !allowedNode(nodeID) {
+		writeError(w, http.StatusBadRequest, "unknown node")
+		return
+	}
+
+	if !allowedAction(action) {
+		writeError(w, http.StatusBadRequest, "unknown node action")
+		return
+	}
+
+	output, err := c.runCompose(action, nodeID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, commandResponse{
+			NodeID: nodeID,
+			Action: action,
+			Output: output,
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, commandResponse{
+		NodeID: nodeID,
+		Action: action,
+		Output: output,
+	})
+}
+
+func (c *controller) runCompose(action, nodeID string) (string, error) {
+	cmd := exec.Command("docker", "compose", action, nodeID)
+	cmd.Dir = c.root
+
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+
+	err := cmd.Run()
+	return output.String(), err
+}
+
+func (c *controller) runJob(status *jobStatus, script string, args ...string) {
 	cmdArgs := append([]string{filepath.Join(c.root, script)}, args...)
 	cmd := exec.Command(cmdArgs[0], cmdArgs[1:]...)
 	cmd.Dir = c.root
@@ -112,20 +239,24 @@ func (c *controller) runScript(script string, args ...string) {
 		}
 	}
 
-	c.status.Output = output.String()
-	c.status.ExitCode = &exitCode
-	c.status.EndedAt = &endedAt
+	status.Output = output.String()
+	status.ExitCode = &exitCode
+	status.EndedAt = &endedAt
 	if err != nil {
-		c.status.State = jobFailed
+		status.State = jobFailed
 		return
 	}
-	c.status.State = jobPassed
+	status.State = jobPassed
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(payload)
+}
+
+func writeError(w http.ResponseWriter, status int, message string) {
+	writeJSON(w, status, map[string]string{"error": message})
 }
 
 func withCORS(next http.Handler) http.Handler {
@@ -139,6 +270,24 @@ func withCORS(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func allowedNode(nodeID string) bool {
+	switch nodeID {
+	case "node-1", "node-2", "node-3", "node-4", "node-5":
+		return true
+	default:
+		return false
+	}
+}
+
+func allowedAction(action string) bool {
+	switch action {
+	case "start", "stop", "restart":
+		return true
+	default:
+		return false
+	}
 }
 
 func env(key, fallback string) string {

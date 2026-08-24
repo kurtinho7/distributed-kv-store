@@ -121,6 +121,13 @@ button:hover {
   width: 40px;
 }
 
+.iconOnly {
+  justify-content: center;
+  min-height: 34px;
+  padding: 0;
+  width: 34px;
+}
+
 .danger {
   background: #a8413d;
 }
@@ -279,6 +286,12 @@ th {
   gap: 10px;
 }
 
+.nodeActions {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+}
+
 .statusDot {
   border-radius: 999px;
   display: inline-block;
@@ -393,4 +406,28 @@ button:disabled {
   overflow: auto;
   padding: 14px;
   white-space: pre-wrap;
+}
+
+.hammerControls {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  margin-bottom: 12px;
+}
+
+.hammerControls label {
+  margin-bottom: 0;
+}
+
+.checkboxLabel {
+  align-content: end;
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  min-height: 62px;
+}
+
+.checkboxLabel input {
+  height: 18px;
+  width: 18px;
 }

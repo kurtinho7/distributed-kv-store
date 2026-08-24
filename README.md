@@ -6,14 +6,14 @@ A resume-oriented distributed systems project: a key-value store with a Go backe
 
 - `server/` - Go HTTP API and KV store internals
 - `web/` - React dashboard for interacting with and visualizing the cluster
-- `docker-compose.yml` - local three-node cluster plus dashboard
+- `docker-compose.yml` - local five-node cluster plus dashboard
 
 ## Current Features
 
 - In-memory `GET`, `PUT`, and `DELETE`
 - Append-only operation log for mutations
 - Optional log persistence and replay with `KV_LOG_PATH`
-- Three-node Docker Compose cluster
+- Five-node Docker Compose cluster
 - Leader-based replication with majority acknowledgements
 - Follower write forwarding to the current elected leader
 - Follower catch-up through missing log replay
@@ -70,7 +70,7 @@ Docker Compose:
 docker compose up --build
 ```
 
-The Compose setup starts `node-1`, `node-2`, `node-3`, and the web dashboard. Each node persists its operation log in its own named volume.
+The Compose setup starts `node-1` through `node-5` and the web dashboard. Each node persists its operation log in its own named volume.
 
 To stop the cluster:
 
@@ -223,7 +223,7 @@ Run the combined chaos demo:
 ./scripts/chaos-demo.sh --duration 15 --writers 8 --keyspace 50
 ```
 
-The chaos demo starts a clean cluster, partitions `node-3`, hammers the remaining majority with traffic, verifies `node-3` lags, heals the partition, waits for catch-up, and verifies convergence.
+The chaos demo starts a clean cluster, partitions `node-5`, hammers the remaining majority with traffic, verifies `node-5` lags, heals the partition, waits for catch-up, and verifies convergence.
 
 Stop a follower and observe health:
 
@@ -262,7 +262,7 @@ curl http://localhost:8081/kv/partitioned
 curl http://localhost:8082/kv/partitioned
 ```
 
-`node-1` and `node-2` should have the value. `node-3` should return `key not found`.
+The non-partitioned majority should have the value. `node-3` should return `key not found`.
 
 Heal the partition:
 

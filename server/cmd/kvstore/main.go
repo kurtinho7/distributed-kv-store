@@ -6,13 +6,14 @@ import (
 	"net/http"
 	"os"
 
+	"kvstore/internal/apply"
 	"kvstore/internal/cluster"
+	"kvstore/internal/faults"
 	"kvstore/internal/httpapi"
 	"kvstore/internal/oplog"
+	raftstate "kvstore/internal/raft"
 	"kvstore/internal/replication"
 	"kvstore/internal/store"
-	raftstate "kvstore/internal/raft"
-	"kvstore/internal/faults"
 )
 
 func main() {
@@ -38,6 +39,7 @@ func main() {
 		}
 		log.Printf("replayed %d operation(s) from %s", len(operationLog.Entries()), logPath)
 	}
+	applier := apply.NewApplier(operationLog, kv)
 	members, err := cluster.ParseMembers(clusterConfig)
 	if err != nil {
 		log.Fatalf("parse cluster config: %v", err)
@@ -58,14 +60,14 @@ func main() {
 			log.Fatalf("leader %q not found in cluster members", leaderID)
 		}
 
-		if err := replication.CatchUp(context.Background(), nodeID, leader.Address, operationLog, kv); err != nil {
+		if err := replication.CatchUp(context.Background(), nodeID, leader.Address, operationLog, kv, applier); err != nil {
 			log.Printf("Initial catch-up failed: %v", err)
 		} else {
 			log.Printf("Successfully caught from leader %s through log index %d", leader.ID, operationLog.LastIndex())
 		}
 	}
 	faultsState := faults.NewState()
-	handler := httpapi.NewServer(kv, state, operationLog, raft, faultsState)
+	handler := httpapi.NewServer(kv, state, operationLog, raft, faultsState, applier)
 
 	sender := raftstate.NewHeartbeatSender(raft, state.Peers())
 	go sender.Start(context.Background())
@@ -73,7 +75,7 @@ func main() {
 	election := raftstate.NewElectionRunner(raft, state.Peers(), state.Majority())
 	go election.Start(context.Background())
 
-	catchUpRunner := replication.NewCatchUpRunner(state, raft, operationLog, kv)
+	catchUpRunner := replication.NewCatchUpRunner(state, raft, operationLog, kv, applier)
 	go catchUpRunner.Start(context.Background())
 
 	log.Printf("starting kvstore node=%s addr=%s", nodeID, addr)

@@ -1,6 +1,6 @@
 import React from 'react';
 import { createRoot } from 'react-dom/client';
-import { Activity, Database, ListOrdered, Play, RefreshCcw, ShieldAlert, ShieldCheck, Terminal, Trash2 } from 'lucide-react';
+import { Activity, Database, ListOrdered, Play, Power, RefreshCcw, RotateCcw, ShieldAlert, ShieldCheck, Terminal, Trash2 } from 'lucide-react';
 import './styles.css';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8080';
@@ -10,6 +10,8 @@ const NODES = [
   { id: 'node-1', url: 'http://localhost:8080' },
   { id: 'node-2', url: 'http://localhost:8081' },
   { id: 'node-3', url: 'http://localhost:8082' },
+  { id: 'node-4', url: 'http://localhost:8083' },
+  { id: 'node-5', url: 'http://localhost:8084' },
 ];
 
 type Entry = {
@@ -75,10 +77,19 @@ function App() {
   const [logEntries, setLogEntries] = React.useState<LogEntry[]>([]);
   const [nodeSnapshots, setNodeSnapshots] = React.useState<NodeSnapshot[]>([]);
   const [faultState, setFaultState] = React.useState<FaultState>({ droppedReplicationTo: [] });
+  const [activeApiUrl, setActiveApiUrl] = React.useState(API_BASE_URL);
   const [chaosStatus, setChaosStatus] = React.useState<DemoJobStatus>({
     state: 'idle',
     output: '',
   });
+  const [hammerStatus, setHammerStatus] = React.useState<DemoJobStatus>({
+    state: 'idle',
+    output: '',
+  });
+  const [hammerDuration, setHammerDuration] = React.useState(30);
+  const [hammerWriters, setHammerWriters] = React.useState(10);
+  const [hammerKeyspace, setHammerKeyspace] = React.useState(100);
+  const [hammerReadAfterWrite, setHammerReadAfterWrite] = React.useState(false);
 
   const replicatedLogRows = React.useMemo(() => {
     const entriesByIndex = new Map<number, LogEntry>();
@@ -99,11 +110,55 @@ function App() {
   }, [nodeSnapshots]);
 
   const refresh = React.useCallback(async () => {
+    const snapshots = await Promise.all(
+      NODES.map(async (node): Promise<NodeSnapshot> => {
+        try {
+          const [raftResponse, kvResponse, logResponse] = await Promise.all([
+            fetch(`${node.url}/raft`),
+            fetch(`${node.url}/kv`),
+            fetch(`${node.url}/log`),
+          ]);
+
+          const raftBody = await raftResponse.json();
+          const kvBody = await kvResponse.json();
+          const logBody = await logResponse.json();
+
+          return {
+            ...node,
+            reachable: true,
+            raft: raftBody,
+            entries: kvBody.entries ?? [],
+            logEntries: logBody.entries ?? [],
+          };
+        } catch {
+          return {
+            ...node,
+            reachable: false,
+            raft: undefined,
+            entries: [],
+            logEntries: [],
+          };
+        }
+      }),
+    );
+
+    setNodeSnapshots(snapshots);
+
+    const activeNode =
+      snapshots.find((node) => node.reachable && node.raft?.role === 'leader') ??
+      snapshots.find((node) => node.reachable);
+
+    if (!activeNode) {
+      throw new Error('no reachable nodes');
+    }
+
+    setActiveApiUrl(activeNode.url);
+
     const [kvResponse, clusterResponse, logResponse, faultsResponse] = await Promise.all([
-      fetch(`${API_BASE_URL}/kv`),
-      fetch(`${API_BASE_URL}/cluster`),
-      fetch(`${API_BASE_URL}/log`),
-      fetch(`${API_BASE_URL}/faults`),
+      fetch(`${activeNode.url}/kv`),
+      fetch(`${activeNode.url}/cluster`),
+      fetch(`${activeNode.url}/log`),
+      fetch(`${activeNode.url}/faults`),
     ]);
     const kvBody = await kvResponse.json();
     const clusterBody = await clusterResponse.json();
@@ -113,38 +168,6 @@ function App() {
     setMembers(clusterBody.members ?? []);
     setLogEntries(logBody.entries ?? []);
     setFaultState(faultsBody);
-    const snapshots = await Promise.all(
-    NODES.map(async (node) => {
-      try {
-        const [raftResponse, kvResponse, logResponse] = await Promise.all([
-          fetch(`${node.url}/raft`),
-          fetch(`${node.url}/kv`),
-          fetch(`${node.url}/log`),
-        ]);
-
-        const raftBody = await raftResponse.json();
-        const kvBody = await kvResponse.json();
-        const logBody = await logResponse.json();
-
-        return {
-          ...node,
-          reachable: true,
-          raft: raftBody,
-          entries: kvBody.entries ?? [],
-          logEntries: logBody.entries ?? [],
-        };
-      } catch {
-        return {
-          ...node,
-          reachable: false,
-          entries: [],
-          logEntries: [],
-        };
-      }
-    }),
-  );
-
-  setNodeSnapshots(snapshots);
   }, []);
 
   React.useEffect(() => {
@@ -157,6 +180,12 @@ function App() {
     setChaosStatus(body);
   }, []);
 
+  const refreshHammerStatus = React.useCallback(async () => {
+    const response = await fetch(`${DEMOCTL_URL}/demo/hammer/status`);
+    const body = await response.json();
+    setHammerStatus(body);
+  }, []);
+
   React.useEffect(() => {
     refreshChaosStatus().catch(() => {
       setChaosStatus({
@@ -164,7 +193,13 @@ function App() {
         output: 'Demo controller is not reachable. Start it with: go run ./cmd/democtl',
       });
     });
-  }, [refreshChaosStatus]);
+    refreshHammerStatus().catch(() => {
+      setHammerStatus({
+        state: 'idle',
+        output: 'Demo controller is not reachable. Start it with: go run ./cmd/democtl',
+      });
+    });
+  }, [refreshChaosStatus, refreshHammerStatus]);
 
   React.useEffect(() => {
     if (chaosStatus.state !== 'running') {
@@ -185,8 +220,27 @@ function App() {
     return () => window.clearInterval(interval);
   }, [chaosStatus.state, refresh, refreshChaosStatus]);
 
+  React.useEffect(() => {
+    if (hammerStatus.state !== 'running') {
+      return;
+    }
+
+    const interval = window.setInterval(() => {
+      refreshHammerStatus()
+        .then(() => refresh())
+        .catch(() => {
+          setHammerStatus((current) => ({
+            ...current,
+            output: `${current.output}\nDemo controller became unreachable.`,
+          }));
+        });
+    }, 1500);
+
+    return () => window.clearInterval(interval);
+  }, [hammerStatus.state, refresh, refreshHammerStatus]);
+
   async function putValue() {
-    const response = await fetch(`${API_BASE_URL}/kv/${encodeURIComponent(keyName)}`, {
+    const response = await fetch(`${activeApiUrl}/kv/${encodeURIComponent(keyName)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ value }),
@@ -197,13 +251,13 @@ function App() {
   }
 
   async function getValue() {
-    const response = await fetch(`${API_BASE_URL}/kv/${encodeURIComponent(keyName)}`);
+    const response = await fetch(`${activeApiUrl}/kv/${encodeURIComponent(keyName)}`);
     const body = await response.json();
     setResult(response.ok ? `${body.key} = ${body.value}` : body.error);
   }
 
   async function deleteValue() {
-    const response = await fetch(`${API_BASE_URL}/kv/${encodeURIComponent(keyName)}`, {
+    const response = await fetch(`${activeApiUrl}/kv/${encodeURIComponent(keyName)}`, {
       method: 'DELETE',
     });
     setResult(response.ok ? `Deleted ${keyName}.` : (await response.json()).error);
@@ -211,30 +265,30 @@ function App() {
   }
 
   async function partitionNode(nodeID: string) {
-  const response = await fetch(`${API_BASE_URL}/faults/replication/${nodeID}`, {
-    method: 'POST',
-  });
+    const response = await fetch(`${activeApiUrl}/faults/replication/${nodeID}`, {
+      method: 'POST',
+    });
 
-  const body = await response.json();
-  setResult(response.ok ? `Partitioned ${nodeID}.` : body.error);
-  await refresh();
-}
-
-async function healNode(nodeID: string) {
-  const response = await fetch(`${API_BASE_URL}/faults/replication/${nodeID}`, {
-    method: 'DELETE',
-  });
-
-  const body = await response.json();
-  setResult(response.ok ? `Healed ${nodeID}.` : body.error);
-  await refresh();
-
-  if (response.ok) {
-    window.setTimeout(() => {
-      refresh().catch(() => setResult('API is not reachable yet.'));
-    }, 1200);
+    const body = await response.json();
+    setResult(response.ok ? `Partitioned ${nodeID}.` : body.error);
+    await refresh();
   }
-}
+
+  async function healNode(nodeID: string) {
+    const response = await fetch(`${activeApiUrl}/faults/replication/${nodeID}`, {
+      method: 'DELETE',
+    });
+
+    const body = await response.json();
+    setResult(response.ok ? `Healed ${nodeID}.` : body.error);
+    await refresh();
+
+    if (response.ok) {
+      window.setTimeout(() => {
+        refresh().catch(() => setResult('API is not reachable yet.'));
+      }, 1200);
+    }
+  }
 
   async function startChaosDemo() {
     const response = await fetch(`${DEMOCTL_URL}/demo/chaos/start`, {
@@ -245,12 +299,40 @@ async function healNode(nodeID: string) {
     setResult(response.ok ? 'Chaos demo started.' : 'Chaos demo is already running.');
   }
 
+  async function startHammer() {
+    const response = await fetch(`${DEMOCTL_URL}/demo/hammer/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        durationSeconds: hammerDuration,
+        writers: hammerWriters,
+        keyspace: hammerKeyspace,
+        readAfterWrite: hammerReadAfterWrite,
+      }),
+    });
+    const body = await response.json();
+    setHammerStatus(body);
+    setResult(response.ok ? 'Traffic hammer started.' : 'Traffic hammer is already running.');
+  }
+
+  async function runNodeAction(nodeID: string, action: 'start' | 'stop' | 'restart') {
+    const response = await fetch(`${DEMOCTL_URL}/demo/nodes/${nodeID}/${action}`, {
+      method: 'POST',
+    });
+    const body = await response.json();
+    setResult(response.ok ? `${action} sent to ${nodeID}.` : body.error ?? body.output ?? 'Node action failed.');
+
+    window.setTimeout(() => {
+      refresh().catch(() => setResult('API is not reachable yet.'));
+    }, 1200);
+  }
+
   return (
     <main>
       <header className="topbar">
         <div>
           <h1>Distributed KV Store</h1>
-          <p>Single-node skeleton today, cluster-ready architecture tomorrow.</p>
+          <p>Active API: {activeApiUrl}</p>
         </div>
         <button className="iconButton" onClick={refresh} title="Refresh cluster state">
           <RefreshCcw size={18} />
@@ -305,6 +387,29 @@ async function healNode(nodeID: string) {
                 <small>term {node.raft?.currentTerm ?? '-'}</small>
                 <small>leader {node.raft?.leaderId || '-'}</small>
                 <small>log index {node.logEntries[node.logEntries.length - 1]?.index ?? 0}</small>
+                <div className="nodeActions">
+                  <button
+                    className="danger iconOnly"
+                    onClick={() => runNodeAction(node.id, 'stop')}
+                    title={`Stop ${node.id}`}
+                  >
+                    <Power size={15} />
+                  </button>
+                  <button
+                    className="iconOnly"
+                    onClick={() => runNodeAction(node.id, 'start')}
+                    title={`Start ${node.id}`}
+                  >
+                    <Play size={15} />
+                  </button>
+                  <button
+                    className="secondary iconOnly"
+                    onClick={() => runNodeAction(node.id, 'restart')}
+                    title={`Restart ${node.id}`}
+                  >
+                    <RotateCcw size={15} />
+                  </button>
+                </div>
               </article>
             ))}
           </div>
@@ -384,6 +489,64 @@ async function healNode(nodeID: string) {
           </div>
           <pre className="jobOutput">
             {chaosStatus.output || 'Start the demo controller, then run the chaos demo from here.'}
+          </pre>
+        </div>
+
+        <div className="panel entries">
+          <div className="panelTitle">
+            <Activity size={18} />
+            <h2>Traffic Hammer</h2>
+          </div>
+          <div className="hammerControls">
+            <label>
+              Duration
+              <input
+                min={1}
+                type="number"
+                value={hammerDuration}
+                onChange={(event) => setHammerDuration(Number(event.target.value))}
+              />
+            </label>
+            <label>
+              Writers
+              <input
+                min={1}
+                type="number"
+                value={hammerWriters}
+                onChange={(event) => setHammerWriters(Number(event.target.value))}
+              />
+            </label>
+            <label>
+              Keyspace
+              <input
+                min={1}
+                type="number"
+                value={hammerKeyspace}
+                onChange={(event) => setHammerKeyspace(Number(event.target.value))}
+              />
+            </label>
+            <label className="checkboxLabel">
+              <input
+                checked={hammerReadAfterWrite}
+                type="checkbox"
+                onChange={(event) => setHammerReadAfterWrite(event.target.checked)}
+              />
+              Read after write
+            </label>
+          </div>
+          <div className="chaosHeader">
+            <span className={`jobBadge ${hammerStatus.state}`}>{hammerStatus.state}</span>
+            <button disabled={hammerStatus.state === 'running'} onClick={startHammer}>
+              <Play size={16} />
+              Start Hammer
+            </button>
+            <button className="secondary" onClick={refreshHammerStatus}>
+              <RefreshCcw size={16} />
+              Status
+            </button>
+          </div>
+          <pre className="jobOutput">
+            {hammerStatus.output || 'Start the demo controller, then hammer the cluster from here.'}
           </pre>
         </div>
 

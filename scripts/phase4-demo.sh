@@ -6,6 +6,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NODE_1="http://localhost:8080"
 NODE_2="http://localhost:8081"
 NODE_3="http://localhost:8082"
+NODE_4="http://localhost:8083"
+NODE_5="http://localhost:8084"
 KEY="phase4-demo"
 VALUE="heals-after-partition"
 
@@ -92,7 +94,7 @@ wait_for_key() {
 
 cd "$ROOT_DIR"
 
-log "Starting a clean three-node cluster"
+log "Starting a clean five-node cluster"
 docker compose down -v --remove-orphans
 docker compose up --build -d
 
@@ -100,6 +102,8 @@ log "Waiting for nodes"
 wait_for_node "$NODE_1" "node-1"
 wait_for_node "$NODE_2" "node-2"
 wait_for_node "$NODE_3" "node-3"
+wait_for_node "$NODE_4" "node-4"
+wait_for_node "$NODE_5" "node-5"
 
 log "Partitioning node-3 from leader replication and catch-up"
 request --fail -X POST "${NODE_1}/faults/replication/node-3"
@@ -113,6 +117,8 @@ request --fail -X PUT "${NODE_1}/kv/${KEY}" \
 log "Verifying majority committed and partitioned node missed the write"
 assert_key_value "$NODE_1" "node-1" "$KEY" "$VALUE"
 assert_key_value "$NODE_2" "node-2" "$KEY" "$VALUE"
+assert_key_value "$NODE_4" "node-4" "$KEY" "$VALUE"
+assert_key_value "$NODE_5" "node-5" "$KEY" "$VALUE"
 assert_key_missing "$NODE_3" "node-3" "$KEY"
 
 log "Healing node-3"

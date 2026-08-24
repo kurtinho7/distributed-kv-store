@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"kvstore/internal/apply"
 	"kvstore/internal/cluster"
 	"kvstore/internal/faults"
 	"kvstore/internal/oplog"
@@ -26,6 +27,7 @@ type Server struct {
 	log     *oplog.Log
 	raft    *raftstate.State
 	writeMu sync.Mutex
+	applier *apply.Applier
 }
 
 type putRequest struct {
@@ -41,8 +43,13 @@ type errorResponse struct {
 	Error string `json:"error"`
 }
 
-func NewServer(store *store.Memory, cluster *cluster.State, log *oplog.Log, raft *raftstate.State, faults *faults.State) *Server {
-	return &Server{store: store, cluster: cluster, log: log, raft: raft, faults: faults}
+type replicateRequest struct {
+	Entry        oplog.Entry `json:"entry"`
+	LeaderCommit uint64      `json:"leaderCommit"`
+}
+
+func NewServer(store *store.Memory, cluster *cluster.State, log *oplog.Log, raft *raftstate.State, faults *faults.State, applier *apply.Applier) *Server {
+	return &Server{store: store, cluster: cluster, log: log, raft: raft, faults: faults, applier: applier}
 }
 
 func (s *Server) Routes() http.Handler {
@@ -143,10 +150,11 @@ func (s *Server) put(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.store.Apply(entry); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to apply log entry")
+	if err := s.applier.AdvanceCommit(entry.Index); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to commit log entry")
 		return
 	}
+	s.replicateCommitToPeers(r)
 	writeJSON(w, http.StatusOK, keyResponse{Key: key, Value: req.Value})
 }
 
@@ -189,16 +197,16 @@ func (s *Server) delete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "failed to reach replication majority")
 		return
 	}
-	if err := s.store.Apply(entry); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to apply log entry")
+	if err := s.applier.AdvanceCommit(entry.Index); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to commit log entry")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) replicate(w http.ResponseWriter, r *http.Request) {
-	var entry oplog.Entry
-	if err := json.NewDecoder(r.Body).Decode(&entry); err != nil {
+	var req replicateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
@@ -208,19 +216,36 @@ func (s *Server) replicate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.log.AppendEntry(entry); err != nil {
+	if req.Entry.Index == 0 {
+		if req.LeaderCommit > 0 {
+			if err := s.applier.AdvanceCommit(req.LeaderCommit); err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to advance commit index")
+				return
+			}
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"acknowledged": true,
+			"index":        s.log.LastIndex(),
+		})
+		return
+	}
+
+	if err := s.log.AppendEntry(req.Entry); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	if err := s.store.Apply(entry); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to apply log entry")
-		return
+	if req.LeaderCommit > 0 {
+		if err := s.applier.AdvanceCommit(req.LeaderCommit); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to advance commit index")
+			return
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"acknowledged": true,
-		"index":        entry.Index,
+		"index":        req.Entry.Index,
 	})
 }
 
@@ -232,10 +257,10 @@ func (s *Server) replicateToPeers(r *http.Request, entry oplog.Entry) int {
 			continue
 		}
 
-		body, err := json.Marshal(entry)
-		if err != nil {
-			continue
-		}
+		body, err := json.Marshal(replicateRequest{
+			Entry:        entry,
+			LeaderCommit: s.applier.CommitIndex(),
+		})
 
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		request, err := http.NewRequestWithContext(ctx, http.MethodPost, peer.Address+"/internal/replicate", bytes.NewBuffer(body))
@@ -268,8 +293,7 @@ func (s *Server) rollbackEntry(entry oplog.Entry) error {
 		return err
 	}
 
-	return s.store.Rebuild(s.log.Entries())
-
+	return s.applier.RebuildCommitted()
 }
 
 func keyFromPath(r *http.Request) string {
@@ -357,8 +381,9 @@ func (s *Server) internalLogEntries(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"entries":   s.log.EntriesAfter(after),
-		"lastIndex": s.log.LastIndex(),
+		"entries":     s.log.EntriesAfter(after),
+		"lastIndex":   s.log.LastIndex(),
+		"commitIndex": s.applier.CommitIndex(),
 	})
 }
 
@@ -418,4 +443,36 @@ func (s *Server) healReplication(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"droppedReplicationTo": s.faults.DroppedReplicationTargets(),
 	})
+}
+
+func (s *Server) replicateCommitToPeers(r *http.Request) {
+	commitIndex := s.applier.CommitIndex()
+
+	for _, peer := range s.cluster.Peers() {
+		if s.faults.ShouldDropReplicationTo(peer.ID) {
+			continue
+		}
+
+		body, err := json.Marshal(replicateRequest{
+			LeaderCommit: commitIndex,
+		})
+		if err != nil {
+			continue
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		request, err := http.NewRequestWithContext(ctx, http.MethodPost, peer.Address+"/internal/replicate", bytes.NewBuffer(body))
+		if err != nil {
+			cancel()
+			continue
+		}
+		request.Header.Set("Content-Type", "application/json")
+
+		response, err := http.DefaultClient.Do(request)
+		cancel()
+		if err != nil {
+			continue
+		}
+		_ = response.Body.Close()
+	}
 }

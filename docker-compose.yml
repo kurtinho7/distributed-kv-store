@@ -1,13 +1,16 @@
+x-node-env: &node-env
+  KV_LEADER_ID: node-1
+  KV_ADDR: :8080
+  KV_CLUSTER: node-1=http://node-1:8080,node-2=http://node-2:8080,node-3=http://node-3:8080,node-4=http://node-4:8080,node-5=http://node-5:8080
+
 services:
   node-1:
     build:
       context: ./server
     environment:
+      <<: *node-env
       KV_NODE_ID: node-1
-      KV_LEADER_ID: node-1
-      KV_ADDR: :8080
       KV_LOG_PATH: /data/kv.log
-      KV_CLUSTER: node-1=http://node-1:8080,node-2=http://node-2:8080,node-3=http://node-3:8080
     ports:
       - "8080:8080"
     volumes:
@@ -17,11 +20,9 @@ services:
     build:
       context: ./server
     environment:
+      <<: *node-env
       KV_NODE_ID: node-2
-      KV_LEADER_ID: node-1
-      KV_ADDR: :8080
       KV_LOG_PATH: /data/kv.log
-      KV_CLUSTER: node-1=http://node-1:8080,node-2=http://node-2:8080,node-3=http://node-3:8080
     ports:
       - "8081:8080"
     volumes:
@@ -31,15 +32,37 @@ services:
     build:
       context: ./server
     environment:
+      <<: *node-env
       KV_NODE_ID: node-3
-      KV_LEADER_ID: node-1
-      KV_ADDR: :8080
       KV_LOG_PATH: /data/kv.log
-      KV_CLUSTER: node-1=http://node-1:8080,node-2=http://node-2:8080,node-3=http://node-3:8080
     ports:
       - "8082:8080"
     volumes:
       - node-3-data:/data
+
+  node-4:
+    build:
+      context: ./server
+    environment:
+      <<: *node-env
+      KV_NODE_ID: node-4
+      KV_LOG_PATH: /data/kv.log
+    ports:
+      - "8083:8080"
+    volumes:
+      - node-4-data:/data
+
+  node-5:
+    build:
+      context: ./server
+    environment:
+      <<: *node-env
+      KV_NODE_ID: node-5
+      KV_LOG_PATH: /data/kv.log
+    ports:
+      - "8084:8080"
+    volumes:
+      - node-5-data:/data
 
   web:
     build:
@@ -52,8 +75,12 @@ services:
       - node-1
       - node-2
       - node-3
+      - node-4
+      - node-5
 
 volumes:
   node-1-data:
   node-2-data:
   node-3-data:
+  node-4-data:
+  node-5-data:

@@ -6,8 +6,10 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NODE_1="http://localhost:8080"
 NODE_2="http://localhost:8081"
 NODE_3="http://localhost:8082"
-PARTITIONED_NODE="node-3"
-PARTITIONED_URL="$NODE_3"
+NODE_4="http://localhost:8083"
+NODE_5="http://localhost:8084"
+PARTITIONED_NODE="node-5"
+PARTITIONED_URL="$NODE_5"
 DURATION_SECONDS=15
 WRITERS=8
 KEYSPACE=50
@@ -93,7 +95,9 @@ compact_log() {
 wait_for_convergence() {
   for _ in $(seq 1 30); do
     if [[ "$(compact_log "$NODE_1")" == "$(compact_log "$NODE_2")" ]] &&
-      [[ "$(compact_log "$NODE_1")" == "$(compact_log "$NODE_3")" ]]; then
+      [[ "$(compact_log "$NODE_1")" == "$(compact_log "$NODE_3")" ]] &&
+      [[ "$(compact_log "$NODE_1")" == "$(compact_log "$NODE_4")" ]] &&
+      [[ "$(compact_log "$NODE_1")" == "$(compact_log "$NODE_5")" ]]; then
       printf "all node logs converged\n"
       return
     fi
@@ -105,7 +109,7 @@ wait_for_convergence() {
 
 cd "$ROOT_DIR"
 
-log "Starting a clean three-node cluster"
+log "Starting a clean five-node cluster"
 docker compose down -v --remove-orphans
 docker compose up --build -d
 
@@ -113,6 +117,8 @@ log "Waiting for nodes"
 wait_for_node "$NODE_1" "node-1"
 wait_for_node "$NODE_2" "node-2"
 wait_for_node "$NODE_3" "node-3"
+wait_for_node "$NODE_4" "node-4"
+wait_for_node "$NODE_5" "node-5"
 
 log "Partitioning ${PARTITIONED_NODE} from leader replication and catch-up"
 request --fail -X POST "${NODE_1}/faults/replication/${PARTITIONED_NODE}" >/dev/null
@@ -123,21 +129,27 @@ log "Hammering traffic while ${PARTITIONED_NODE} is partitioned"
   --duration "$DURATION_SECONDS" \
   --writers "$WRITERS" \
   --keyspace "$KEYSPACE" \
-  --nodes "${NODE_1},${NODE_2}"
+  --nodes "${NODE_1},${NODE_2},${NODE_3},${NODE_4}"
 
 log "Checking that majority moved ahead while ${PARTITIONED_NODE} lagged"
 node_1_index="$(last_log_index "$NODE_1")"
 node_2_index="$(last_log_index "$NODE_2")"
+node_3_index="$(last_log_index "$NODE_3")"
+node_4_index="$(last_log_index "$NODE_4")"
 partitioned_index="$(last_log_index "$PARTITIONED_URL")"
 node_1_index="${node_1_index:-0}"
 node_2_index="${node_2_index:-0}"
+node_3_index="${node_3_index:-0}"
+node_4_index="${node_4_index:-0}"
 partitioned_index="${partitioned_index:-0}"
 
 printf "node-1 index: %s\n" "$node_1_index"
 printf "node-2 index: %s\n" "$node_2_index"
+printf "node-3 index: %s\n" "$node_3_index"
+printf "node-4 index: %s\n" "$node_4_index"
 printf "%s index: %s\n" "$PARTITIONED_NODE" "$partitioned_index"
 
-if [[ "$node_1_index" -eq 0 || "$node_2_index" -eq 0 ]]; then
+if [[ "$node_1_index" -eq 0 || "$node_2_index" -eq 0 || "$node_3_index" -eq 0 || "$node_4_index" -eq 0 ]]; then
   fail "majority nodes did not accept traffic"
 fi
 

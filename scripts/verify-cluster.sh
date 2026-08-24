@@ -5,6 +5,8 @@ NODES=(
   "node-1=http://localhost:8080"
   "node-2=http://localhost:8081"
   "node-3=http://localhost:8082"
+  "node-4=http://localhost:8083"
+  "node-5=http://localhost:8084"
 )
 
 TIMEOUT_SECONDS=20

@@ -12,6 +12,7 @@ import (
 	"kvstore/internal/oplog"
 	"kvstore/internal/raft"
 	"kvstore/internal/store"
+	"kvstore/internal/apply"
 )
 
 func TestCatchUpRunnerFetchesFromKnownLeader(t *testing.T) {
@@ -26,6 +27,8 @@ func TestCatchUpRunnerFetchesFromKnownLeader(t *testing.T) {
 					CreatedAt: time.Now().UTC(),
 				},
 			},
+			"lastIndex":   1,
+			"commitIndex": 1,
 		})
 	}))
 	defer leader.Close()
@@ -44,7 +47,8 @@ func TestCatchUpRunnerFetchesFromKnownLeader(t *testing.T) {
 	log := oplog.New()
 	kv := store.NewMemory()
 
-	runner := NewCatchUpRunner(clusterState, raftState, log, kv)
+	applier := apply.NewApplier(log, kv)
+	runner := NewCatchUpRunner(clusterState, raftState, log, kv, applier)
 	runner.catchUp(context.Background())
 
 	value, err := kv.Get("healed")

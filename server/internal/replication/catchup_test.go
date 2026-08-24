@@ -8,18 +8,26 @@ import (
 	"testing"
 	"time"
 
+	"kvstore/internal/apply"
 	"kvstore/internal/oplog"
 	"kvstore/internal/store"
 )
 
 func TestCatchUpFetchesAndAppliesMissingEntries(t *testing.T) {
 	leader := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("after") != "1" {
-			t.Fatalf("expected after=1, got %q", r.URL.Query().Get("after"))
+		if r.URL.Query().Get("after") != "0" {
+			t.Fatalf("expected after=0, got %q", r.URL.Query().Get("after"))
 		}
 
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"entries": []oplog.Entry{
+				{
+					Index:     1,
+					Operation: oplog.OperationPut,
+					Key:       "phase",
+					Value:     "two",
+					CreatedAt: time.Now().UTC(),
+				},
 				{
 					Index:     2,
 					Operation: oplog.OperationPut,
@@ -28,7 +36,8 @@ func TestCatchUpFetchesAndAppliesMissingEntries(t *testing.T) {
 					CreatedAt: time.Now().UTC(),
 				},
 			},
-			"lastIndex": 2,
+			"lastIndex":   2,
+			"commitIndex": 2,
 		})
 	}))
 	defer leader.Close()
@@ -42,7 +51,9 @@ func TestCatchUpFetchesAndAppliesMissingEntries(t *testing.T) {
 		t.Fatalf("apply existing entry: %v", err)
 	}
 
-	if err := CatchUp(context.Background(), "node-2", leader.URL, log, kv); err != nil {
+	applier := apply.NewApplier(log, kv)
+
+	if err := CatchUp(context.Background(), "node-2", leader.URL, log, kv, applier); err != nil {
 		t.Fatalf("catch up: %v", err)
 	}
 
@@ -61,13 +72,16 @@ func TestCatchUpFetchesAndAppliesMissingEntries(t *testing.T) {
 
 func TestCatchUpTruncatesEntriesBeyondLeaderLastIndex(t *testing.T) {
 	leader := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("after") != "2" {
-			t.Fatalf("expected after=2, got %q", r.URL.Query().Get("after"))
+		if r.URL.Query().Get("after") != "0" {
+			t.Fatalf("expected after=0, got %q", r.URL.Query().Get("after"))
 		}
 
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"entries":   []oplog.Entry{},
-			"lastIndex": 1,
+			"entries": []oplog.Entry{
+				{Index: 1, Operation: oplog.OperationPut, Key: "committed", Value: "yes"},
+			},
+			"lastIndex":   1,
+			"commitIndex": 1,
 		})
 	}))
 	defer leader.Close()
@@ -85,7 +99,8 @@ func TestCatchUpTruncatesEntriesBeyondLeaderLastIndex(t *testing.T) {
 		t.Fatalf("rebuild store: %v", err)
 	}
 
-	if err := CatchUp(context.Background(), "node-2", leader.URL, log, kv); err != nil {
+	applier := apply.NewApplier(log, kv)
+	if err := CatchUp(context.Background(), "node-2", leader.URL, log, kv, applier); err != nil {
 		t.Fatalf("catch up: %v", err)
 	}
 
@@ -95,5 +110,49 @@ func TestCatchUpTruncatesEntriesBeyondLeaderLastIndex(t *testing.T) {
 
 	if _, err := kv.Get("extra"); err != store.ErrNotFound {
 		t.Fatalf("expected extra key to be removed, got %v", err)
+	}
+}
+
+func TestCatchUpTruncatesConflictingEntryAtSameIndex(t *testing.T) {
+	leader := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"entries": []oplog.Entry{
+				{Index: 1, Operation: oplog.OperationPut, Key: "stable", Value: "same"},
+				{Index: 2, Operation: oplog.OperationPut, Key: "leader", Value: "wins"},
+			},
+			"lastIndex":   2,
+			"commitIndex": 2,
+		})
+	}))
+	defer leader.Close()
+
+	log := oplog.New()
+	if _, err := log.Append(oplog.OperationPut, "stable", "same"); err != nil {
+		t.Fatalf("append stable entry: %v", err)
+	}
+	if _, err := log.Append(oplog.OperationPut, "follower", "loses"); err != nil {
+		t.Fatalf("append conflicting entry: %v", err)
+	}
+
+	kv := store.NewMemory()
+	applier := apply.NewApplier(log, kv)
+	if err := applier.AdvanceCommit(2); err != nil {
+		t.Fatalf("advance local commit: %v", err)
+	}
+
+	if err := CatchUp(context.Background(), "node-2", leader.URL, log, kv, applier); err != nil {
+		t.Fatalf("catch up: %v", err)
+	}
+
+	if _, err := kv.Get("follower"); err != store.ErrNotFound {
+		t.Fatalf("expected conflicting follower key removed, got %v", err)
+	}
+
+	value, err := kv.Get("leader")
+	if err != nil {
+		t.Fatalf("expected leader key to be applied: %v", err)
+	}
+	if value != "wins" {
+		t.Fatalf("expected leader=wins, got %q", value)
 	}
 }
