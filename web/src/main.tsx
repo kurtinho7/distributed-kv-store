@@ -81,6 +81,20 @@ type VerifySummary = {
   logsMatch?: boolean;
 };
 
+type ScenarioSummary = {
+  title: string;
+  initialLeader?: string;
+  newLeader?: string;
+  partitionedFollower?: string;
+  lagEntries?: number;
+  writeSuccesses?: number;
+  writeFailures?: number;
+  availability?: number;
+  correctness: string;
+  finalLogIndex?: number;
+  logIndexes: VerifyLogIndex[];
+};
+
 function parseVerifySummary(status: DemoJobStatus): VerifySummary {
   const output = status.output;
   const reachableMatch = output.match(/Reachable nodes:\s+(\d+)/);
@@ -108,6 +122,62 @@ function parseVerifySummary(status: DemoJobStatus): VerifySummary {
     leaders: leadersMatch ? Number(leadersMatch[1]) : undefined,
     logIndexes,
     logsMatch,
+  };
+}
+
+function parseScenarioSummary(status: DemoJobStatus): ScenarioSummary {
+  const output = status.output;
+  const initialLeaderMatch = output.match(/current leader:\s+(node-\d+)/);
+  const newLeaderMatch = output.match(/new leader:\s+(node-\d+)/);
+  const partitionedFollowerMatch = output.match(/partitioned follower:\s+(node-\d+)/);
+  const lagMatch = output.match(/lag while partitioned:\s+(\d+) entries/);
+  const writeSuccessesMatch = output.match(/Write successes:\s+(\d+)/);
+  const writeFailuresMatch = output.match(/Write failures:\s+(\d+)/);
+  const logIndexes = Array.from(output.matchAll(/(node-\d+)=(\d+)/g)).map((match) => ({
+    nodeId: match[1],
+    index: Number(match[2]),
+  }));
+  const uniqueIndexes = new Set(logIndexes.map((entry) => entry.index));
+  const finalLogIndex = uniqueIndexes.size === 1 && logIndexes.length > 0 ? logIndexes[0].index : undefined;
+  const writeSuccesses = writeSuccessesMatch ? Number(writeSuccessesMatch[1]) : undefined;
+  const writeFailures = writeFailuresMatch ? Number(writeFailuresMatch[1]) : undefined;
+  const totalWrites =
+    writeSuccesses !== undefined && writeFailures !== undefined ? writeSuccesses + writeFailures : undefined;
+  const availability =
+    totalWrites !== undefined && totalWrites > 0 && writeSuccesses !== undefined
+      ? Math.round((writeSuccesses / totalWrites) * 100)
+      : undefined;
+
+  let correctness = '-';
+  if (status.state === 'passed' && output.includes('Cluster verified')) {
+    correctness = 'verified';
+  } else if (status.state === 'failed') {
+    correctness = 'failed';
+  } else if (status.state === 'running') {
+    correctness = 'checking';
+  }
+
+  let title = 'Not run';
+  if (status.state === 'running') {
+    title = 'Running';
+  } else if (status.state === 'passed') {
+    title = 'Passed';
+  } else if (status.state === 'failed') {
+    title = 'Failed';
+  }
+
+  return {
+    title,
+    initialLeader: initialLeaderMatch?.[1],
+    newLeader: newLeaderMatch?.[1],
+    partitionedFollower: partitionedFollowerMatch?.[1],
+    lagEntries: lagMatch ? Number(lagMatch[1]) : undefined,
+    writeSuccesses,
+    writeFailures,
+    availability,
+    correctness,
+    finalLogIndex,
+    logIndexes,
   };
 }
 
@@ -161,6 +231,7 @@ function App() {
   }, [nodeSnapshots]);
 
   const verifySummary = React.useMemo(() => parseVerifySummary(verifyStatus), [verifyStatus]);
+  const scenarioSummary = React.useMemo(() => parseScenarioSummary(scenarioStatus), [scenarioStatus]);
 
   const refresh = React.useCallback(async () => {
     const snapshots = await Promise.all(
@@ -446,6 +517,15 @@ function App() {
     const body = await response.json();
     setScenarioStatus(body);
     setResult(response.ok ? 'Leader failover scenario started.' : 'Leader failover scenario is already running.');
+  }
+
+  async function startFollowerCatchUp() {
+    const response = await fetch(`${DEMOCTL_URL}/demo/scenarios/follower-catchup/start`, {
+      method: 'POST',
+    });
+    const body = await response.json();
+    setScenarioStatus(body);
+    setResult(response.ok ? 'Follower catch-up scenario started.' : 'A scenario is already running.');
   }
 
   async function runNodeAction(nodeID: string, action: 'start' | 'stop' | 'restart') {
@@ -744,11 +824,66 @@ function App() {
               <Play size={16} />
               Leader Failover Under Load
             </button>
+            <button disabled={scenarioStatus.state === 'running'} onClick={startFollowerCatchUp}>
+              <Play size={16} />
+              Follower Partition And Catch-Up
+            </button>
             <button className="secondary" onClick={refreshScenarioStatus}>
               <RefreshCcw size={16} />
               Status
             </button>
           </div>
+          <div className={`scenarioSummary ${scenarioStatus.state}`}>
+            <div className="verifyMetric">
+              <span>Result</span>
+              <strong>{scenarioSummary.title}</strong>
+            </div>
+            <div className="verifyMetric">
+              <span>Old Leader</span>
+              <strong>{scenarioSummary.initialLeader ?? '-'}</strong>
+            </div>
+            <div className="verifyMetric">
+              <span>New Leader</span>
+              <strong>{scenarioSummary.newLeader ?? '-'}</strong>
+            </div>
+            <div className="verifyMetric">
+              <span>Partitioned</span>
+              <strong>{scenarioSummary.partitionedFollower ?? '-'}</strong>
+            </div>
+            <div className="verifyMetric">
+              <span>Lag</span>
+              <strong>{scenarioSummary.lagEntries === undefined ? '-' : `${scenarioSummary.lagEntries}`}</strong>
+            </div>
+            <div className="verifyMetric">
+              <span>Availability</span>
+              <strong>{scenarioSummary.availability === undefined ? '-' : `${scenarioSummary.availability}%`}</strong>
+            </div>
+            <div className="verifyMetric">
+              <span>Correctness</span>
+              <strong>{scenarioSummary.correctness}</strong>
+            </div>
+            <div className="verifyMetric">
+              <span>Accepted</span>
+              <strong>{scenarioSummary.writeSuccesses ?? '-'}</strong>
+            </div>
+            <div className="verifyMetric">
+              <span>Rejected</span>
+              <strong>{scenarioSummary.writeFailures ?? '-'}</strong>
+            </div>
+            <div className="verifyMetric">
+              <span>Final Index</span>
+              <strong>{scenarioSummary.finalLogIndex ?? '-'}</strong>
+            </div>
+          </div>
+          {scenarioSummary.logIndexes.length > 0 && (
+            <div className="verifyIndexes">
+              {scenarioSummary.logIndexes.map((entry) => (
+                <span key={entry.nodeId}>
+                  {entry.nodeId}={entry.index}
+                </span>
+              ))}
+            </div>
+          )}
           <pre className="jobOutput">
             {scenarioStatus.output ||
               'Run a scripted failover: hammer traffic, stop the leader, elect a new leader, restart the old leader, then verify convergence.'}

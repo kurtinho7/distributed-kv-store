@@ -82,6 +82,8 @@ func main() {
 	mux.HandleFunc("GET /demo/verify/status", c.verifyStatus)
 	mux.HandleFunc("POST /demo/scenarios/leader-failover/start", c.startLeaderFailover)
 	mux.HandleFunc("GET /demo/scenarios/leader-failover/status", c.leaderFailoverStatus)
+	mux.HandleFunc("POST /demo/scenarios/follower-catchup/start", c.startFollowerCatchUp)
+	mux.HandleFunc("GET /demo/scenarios/follower-catchup/status", c.leaderFailoverStatus)
 	mux.HandleFunc("POST /demo/nodes/", c.nodeAction)
 
 	log.Printf("starting demo controller addr=%s root=%s", addr, root)
@@ -228,6 +230,28 @@ func (c *controller) startLeaderFailover(w http.ResponseWriter, _ *http.Request)
 	c.mu.Unlock()
 
 	go c.runJob(&c.scenarioJob, "scripts/leader-failover-demo.sh", "--duration", "30", "--writers", "10", "--keyspace", "100")
+
+	c.leaderFailoverStatus(w, nil)
+}
+
+func (c *controller) startFollowerCatchUp(w http.ResponseWriter, _ *http.Request) {
+	c.mu.Lock()
+	if c.scenarioJob.State == jobRunning {
+		status := c.scenarioJob
+		c.mu.Unlock()
+		writeJSON(w, http.StatusConflict, status)
+		return
+	}
+
+	now := time.Now().UTC()
+	c.scenarioJob = jobStatus{
+		State:     jobRunning,
+		StartedAt: &now,
+		Output:    "",
+	}
+	c.mu.Unlock()
+
+	go c.runJob(&c.scenarioJob, "scripts/follower-catchup-demo.sh", "--duration", "20", "--writers", "3", "--keyspace", "100")
 
 	c.leaderFailoverStatus(w, nil)
 }

@@ -5,6 +5,8 @@ DURATION_SECONDS=30
 WRITERS=10
 KEYSPACE=100
 READ_AFTER_WRITE=false
+RETRIES=2
+RETRY_DELAY_MS=100
 NODES=(
   "http://localhost:8080"
   "http://localhost:8081"
@@ -23,6 +25,8 @@ Options:
   --keyspace COUNT       Number of keys to spread writes across. Default: ${KEYSPACE}
   --nodes URLS           Comma-separated node URLs. Default: all local nodes.
   --read-after-write     Read each key after writing it.
+  --retries COUNT        Retries for transient write failures. Default: ${RETRIES}
+  --retry-delay-ms MS    Delay before retrying transient write failures. Default: ${RETRY_DELAY_MS}
   --help                 Show this help.
 EOF
 }
@@ -48,6 +52,14 @@ while [[ $# -gt 0 ]]; do
     --read-after-write)
       READ_AFTER_WRITE=true
       shift
+      ;;
+    --retries)
+      RETRIES="$2"
+      shift 2
+      ;;
+    --retry-delay-ms)
+      RETRY_DELAY_MS="$2"
+      shift 2
       ;;
     --help)
       usage
@@ -76,6 +88,16 @@ if ! [[ "$KEYSPACE" =~ ^[0-9]+$ ]] || [[ "$KEYSPACE" -lt 1 ]]; then
   exit 1
 fi
 
+if ! [[ "$RETRIES" =~ ^[0-9]+$ ]]; then
+  printf "retries must be a non-negative integer\n" >&2
+  exit 1
+fi
+
+if ! [[ "$RETRY_DELAY_MS" =~ ^[0-9]+$ ]]; then
+  printf "retry delay must be a non-negative integer\n" >&2
+  exit 1
+fi
+
 if [[ "${#NODES[@]}" -eq 0 ]]; then
   printf "nodes must include at least one URL\n" >&2
   exit 1
@@ -85,6 +107,50 @@ TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
 END_TIME=$((SECONDS + DURATION_SECONDS))
+RETRY_DELAY_WHOLE_SECONDS=$((RETRY_DELAY_MS / 1000))
+printf -v RETRY_DELAY_FRACTION "%03d" "$((RETRY_DELAY_MS % 1000))"
+RETRY_DELAY_SECONDS="${RETRY_DELAY_WHOLE_SECONDS}.${RETRY_DELAY_FRACTION}"
+
+is_retryable_status() {
+  local status="$1"
+
+  [[ "$status" == "000" || "$status" == "503" ]]
+}
+
+put_with_retries() {
+  local key="$1"
+  local value="$2"
+  local codes_file="$3"
+  local attempt=0
+  local status="000"
+
+  while [[ "$attempt" -le "$RETRIES" ]]; do
+    local node="${NODES[$((RANDOM % ${#NODES[@]}))]}"
+
+    status="$(curl --silent --output /dev/null --write-out "%{http_code}" \
+      -X PUT "${node}/kv/${key}" \
+      -H "Content-Type: application/json" \
+      -d "{\"value\":\"${value}\"}" || true)"
+    printf "write:%s\n" "$status" >>"$codes_file"
+
+    if [[ "$status" =~ ^2 ]]; then
+      printf "%s" "$status"
+      return
+    fi
+
+    if ! is_retryable_status "$status" || [[ "$attempt" -eq "$RETRIES" ]]; then
+      printf "%s" "$status"
+      return
+    fi
+
+    attempt=$((attempt + 1))
+    if [[ "$RETRY_DELAY_MS" -gt 0 ]]; then
+      sleep "$RETRY_DELAY_SECONDS"
+    fi
+  done
+
+  printf "%s" "$status"
+}
 
 writer() {
   local writer_id="$1"
@@ -97,16 +163,11 @@ writer() {
   local read_failures=0
 
   while [[ "$SECONDS" -lt "$END_TIME" ]]; do
-    local node="${NODES[$((RANDOM % ${#NODES[@]}))]}"
     local key="hammer-$((RANDOM % KEYSPACE))"
     local value="writer-${writer_id}-${SECONDS}-${RANDOM}"
     local status
 
-    status="$(curl --silent --output /dev/null --write-out "%{http_code}" \
-      -X PUT "${node}/kv/${key}" \
-      -H "Content-Type: application/json" \
-      -d "{\"value\":\"${value}\"}" || true)"
-    printf "write:%s\n" "$status" >>"$codes_file"
+    status="$(put_with_retries "$key" "$value" "$codes_file")"
 
     writes=$((writes + 1))
     if [[ "$status" =~ ^2 ]]; then
@@ -117,6 +178,7 @@ writer() {
     fi
 
     if [[ "$READ_AFTER_WRITE" == true ]]; then
+      local node="${NODES[$((RANDOM % ${#NODES[@]}))]}"
       status="$(curl --silent --output /dev/null --write-out "%{http_code}" "${node}/kv/${key}" || true)"
       printf "read:%s\n" "$status" >>"$codes_file"
       if [[ "$status" =~ ^2 ]]; then
@@ -138,6 +200,7 @@ writer() {
 printf "Hammering cluster for %ss with %s writer(s), keyspace=%s\n" \
   "$DURATION_SECONDS" "$WRITERS" "$KEYSPACE"
 printf "Targets: %s\n" "${NODES[*]}"
+printf "Write retries: %s, retry delay: %sms\n" "$RETRIES" "$RETRY_DELAY_MS"
 
 for writer_id in $(seq 1 "$WRITERS"); do
   writer "$writer_id" &
@@ -175,6 +238,7 @@ Hammer summary
 Duration:        ${DURATION_SECONDS}s
 Writers:         ${WRITERS}
 Keyspace:        ${KEYSPACE}
+Retries:         ${RETRIES}
 Writes:          ${total_writes}
 Write successes: ${total_write_successes}
 Write failures:  ${total_write_failures}

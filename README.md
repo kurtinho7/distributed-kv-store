@@ -199,6 +199,13 @@ Hammer the cluster with concurrent writes:
 ```
 
 The hammer summary includes per-status counts so availability failures can be grouped by HTTP status or connection failure (`000`).
+By default, transient write failures (`503` and `000`) are retried twice with a short backoff. `Writes` counts logical client writes; the status breakdown counts underlying HTTP attempts.
+
+Tune retry behavior:
+
+```sh
+./scripts/hammer.sh --duration 30 --writers 10 --keyspace 100 --retries 4 --retry-delay-ms 150
+```
 
 Optionally read after each write:
 

@@ -408,7 +408,8 @@ button:disabled {
   white-space: pre-wrap;
 }
 
-.verifySummary {
+.verifySummary,
+.scenarioSummary {
   display: grid;
   gap: 10px;
   grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
@@ -437,12 +438,14 @@ button:disabled {
   font-size: 20px;
 }
 
-.verifySummary.passed .verifyMetric:first-child {
+.verifySummary.passed .verifyMetric:first-child,
+.scenarioSummary.passed .verifyMetric:first-child {
   background: #dcefe8;
   border-color: #b7ddcd;
 }
 
-.verifySummary.failed .verifyMetric:first-child {
+.verifySummary.failed .verifyMetric:first-child,
+.scenarioSummary.failed .verifyMetric:first-child {
   background: #f3dddd;
   border-color: #e3b8b5;
 }
