@@ -61,6 +61,36 @@ h1 {
   grid-column: 1 / -1;
 }
 
+.operationsPanel {
+  display: grid;
+  gap: 22px;
+  grid-column: 1 / -1;
+  grid-template-columns: minmax(260px, 360px) 1fr;
+}
+
+.kvEditor {
+  min-width: 0;
+}
+
+.faultControls {
+  border-left: 1px solid #dfe5dc;
+  min-width: 0;
+  padding-left: 22px;
+}
+
+.faultHeader {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+.faultHeader .panelTitle {
+  margin-bottom: 0;
+}
+
 .panelTitle {
   align-items: center;
   display: flex;
@@ -227,6 +257,17 @@ th {
   .layout {
     grid-template-columns: 1fr;
   }
+
+  .operationsPanel {
+    grid-template-columns: 1fr;
+  }
+
+  .faultControls {
+    border-left: 0;
+    border-top: 1px solid #dfe5dc;
+    padding-left: 0;
+    padding-top: 18px;
+  }
 }
 
 .node.unhealthy {
@@ -312,7 +353,7 @@ th {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  margin-top: 12px;
+  margin-top: 10px;
   min-height: 28px;
 }
 
@@ -333,23 +374,31 @@ th {
 .faultGrid {
   display: grid;
   gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(265px, 1fr));
 }
 
 .faultNode {
+  align-items: center;
   border: 1px solid #dfe5dc;
   border-radius: 8px;
-  display: grid;
-  gap: 8px;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
   padding: 10px;
 }
 
 .faultNode strong {
   font-size: 14px;
+  white-space: nowrap;
 }
 
 .faultActions {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
+  flex-wrap: nowrap;
+}
+
+.faultActions button {
+  min-height: 34px;
+  padding: 0 10px;
 }
 
 button:disabled {

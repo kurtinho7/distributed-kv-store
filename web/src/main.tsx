@@ -592,31 +592,89 @@ function App() {
       </header>
 
       <section className="layout">
-        <div className="panel operations">
-          <div className="panelTitle">
-            <Database size={18} />
-            <h2>KV Operations</h2>
+        <div className="panel operations operationsPanel">
+          <div className="kvEditor">
+            <div className="panelTitle">
+              <Database size={18} />
+              <h2>KV Operations</h2>
+            </div>
+            <label>
+              Key
+              <input value={keyName} onChange={(event) => setKeyName(event.target.value)} />
+            </label>
+            <label>
+              Value
+              <input value={value} onChange={(event) => setValue(event.target.value)} />
+            </label>
+            <div className="actions">
+              <button onClick={putValue}>
+                <Play size={16} />
+                Put
+              </button>
+              <button onClick={getValue}>Get</button>
+              <button className="danger" onClick={deleteValue}>
+                <Trash2 size={16} />
+                Delete
+              </button>
+            </div>
+            <output>{result}</output>
           </div>
-          <label>
-            Key
-            <input value={keyName} onChange={(event) => setKeyName(event.target.value)} />
-          </label>
-          <label>
-            Value
-            <input value={value} onChange={(event) => setValue(event.target.value)} />
-          </label>
-          <div className="actions">
-            <button onClick={putValue}>
-              <Play size={16} />
-              Put
-            </button>
-            <button onClick={getValue}>Get</button>
-            <button className="danger" onClick={deleteValue}>
-              <Trash2 size={16} />
-              Delete
-            </button>
+
+          <div className="faultControls">
+            <div className="faultHeader">
+              <div className="panelTitle">
+                <ShieldAlert size={18} />
+                <h2>Fault Controls</h2>
+              </div>
+              <button
+                onClick={async () => {
+                  await Promise.all(NODES.map((node) => healNode(node.id)));
+                  await refresh();
+                }}
+              >
+                <ShieldCheck size={16} />
+                Heal All
+              </button>
+            </div>
+            <div className="faultGrid">
+              {NODES.map((node) => {
+                const isPartitioned = faultState.droppedReplicationTo.includes(node.id);
+                const isLeader = node.id === currentLeaderID;
+
+                return (
+                  <div className="faultNode" key={node.id}>
+                    <strong>{node.id}</strong>
+                    <div className="actions faultActions">
+                      <button
+                        className="danger"
+                        disabled={isPartitioned || isLeader}
+                        title={isLeader ? 'Current leader cannot be partitioned from itself' : undefined}
+                        onClick={() => partitionNode(node.id)}
+                      >
+                        <ShieldAlert size={16} />
+                        {isLeader ? 'Leader' : 'Partition'}
+                      </button>
+                      <button disabled={!isPartitioned} onClick={() => healNode(node.id)}>
+                        <ShieldCheck size={16} />
+                        Heal
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="faultSummary">
+              {faultState.droppedReplicationTo.length === 0 ? (
+                <span>No active partitions</span>
+              ) : (
+                faultState.droppedReplicationTo.map((nodeID) => (
+                  <span className="faultPill" key={nodeID}>
+                    {nodeID} partitioned
+                  </span>
+                ))
+              )}
+            </div>
           </div>
-          <output>{result}</output>
         </div>
 
         <div className="panel entries">
@@ -664,62 +722,6 @@ function App() {
                 </div>
               </article>
             ))}
-          </div>
-        </div>
-
-        <div className="panel operations">
-          <div className="panelTitle">
-            <ShieldAlert size={18} />
-            <h2>Fault Controls</h2>
-          </div>
-          <div className="actions verticalActions">
-            <div className="faultGrid">
-              {NODES.map((node) => {
-                const isPartitioned = faultState.droppedReplicationTo.includes(node.id);
-                const isLeader = node.id === currentLeaderID;
-
-                return (
-                  <div className="faultNode" key={node.id}>
-                    <strong>{node.id}</strong>
-                    <div className="actions faultActions">
-                      <button
-                        className="danger"
-                        disabled={isPartitioned || isLeader}
-                        title={isLeader ? 'Current leader cannot be partitioned from itself' : undefined}
-                        onClick={() => partitionNode(node.id)}
-                      >
-                        <ShieldAlert size={16} />
-                        {isLeader ? 'Leader' : 'Partition'}
-                      </button>
-                      <button disabled={!isPartitioned} onClick={() => healNode(node.id)}>
-                        <ShieldCheck size={16} />
-                        Heal
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-            <button
-              onClick={async () => {
-                await Promise.all(NODES.map((node) => healNode(node.id)));
-                await refresh();
-              }}
-            >
-              <ShieldCheck size={16} />
-              Heal All
-            </button>
-            <div className="faultSummary">
-              {faultState.droppedReplicationTo.length === 0 ? (
-                <span>No active partitions</span>
-              ) : (
-                faultState.droppedReplicationTo.map((nodeID) => (
-                  <span className="faultPill" key={nodeID}>
-                    {nodeID} partitioned
-                  </span>
-                ))
-              )}
-            </div>
           </div>
         </div>
 
